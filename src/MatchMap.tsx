@@ -21,19 +21,21 @@ export default function MatchMap({
   pins,
   onPick,
   onTileError,
+  zoom = 11,
 }: {
   center: Point
   radius: number
   pins: Pin[]
   onPick: (id: string) => void
   onTileError: () => void
+  zoom?: number
 }) {
   return (
     <div className="overflow-hidden rounded-3xl border border-stone-200 h-80 md:h-110">
       <MapContainer
-        key={`${center.lat}-${center.lng}`}
+        key={`${center.lat}-${center.lng}-${zoom}`}
         center={[center.lat, center.lng]}
-        zoom={11}
+        zoom={zoom}
         scrollWheelZoom={false}
         className="h-full w-full"
         aria-label="Map of nearby placements"
@@ -43,7 +45,7 @@ export default function MatchMap({
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           eventHandlers={{ tileerror: onTileError }}
         />
-        <Circle
+        {radius > 0 && <Circle
           center={[center.lat, center.lng]}
           radius={radius * 1000}
           pathOptions={{
@@ -52,7 +54,7 @@ export default function MatchMap({
             fillOpacity: 0.08,
             weight: 1.5,
           }}
-        />
+        />}
         <Circle
           center={[center.lat, center.lng]}
           radius={700}

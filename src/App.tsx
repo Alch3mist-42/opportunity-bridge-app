@@ -57,7 +57,36 @@ import {
   type Store,
   type Youth,
   type Week,
+  type Account,
+  type Session,
+  loadSession,
+  saveSession,
+  DEMO_PASSWORD,
 } from "./data"
+import { canAccess, homeFor, isPublic, ownerLabel, type Role } from "../lib/access"
+import {
+  ADMIN_SESSION_MS,
+  clearFailures,
+  emailProblem,
+  hashPassword,
+  isAdminCode,
+  lockRemaining,
+  newSalt,
+  passwordProblem,
+  recordFailure,
+} from "../lib/auth"
+import {
+  canApply,
+  canDecideApplication,
+  canLogWeek,
+  canSignOffWeek,
+  mondayOf,
+  reportAllowed,
+  validatePlacement,
+  validateWeek,
+  youthAgeProblem,
+  LIMITS,
+} from "../lib/rules"
 import {
   calculateETI,
   claimMonthsSince,
@@ -72,11 +101,48 @@ import {
   type Point,
   type TravelMode,
 } from "../lib/travel"
-import { SUBURBS } from "../lib/suburbs"
+import {
+  describePoint,
+  matchPlaces,
+  PROVINCE_CENTRES,
+  PROVINCES,
+  provinceOf,
+  rememberProvince,
+  searchPlacesOnline,
+  type Place,
+  type Province,
+} from "../lib/places"
+import {
+  checkWorkWeek,
+  hourlyRate,
+  MAX_CONTRACTED_HOURS_MONTH,
+  NATIONAL_MINIMUM_WAGE_HOURLY,
+  placementLabourProblem,
+} from "../lib/labour"
 
-type Role = "youth" | "business" | "admin"
 // Hash-based routes (#/matches) so the app works on any static host.
-const currentRoute = () => window.location.hash.slice(1) || "/demo"
+const currentRoute = () => window.location.hash.slice(1) || "/"
+
+// Keeps a page's filters (area, radius, view) through a refresh, for this browser tab only.
+function useTabState<T>(key: string, initial: T | (() => T)) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const saved = sessionStorage.getItem(`ob-view-${key}`)
+      if (saved !== null) return JSON.parse(saved) as T
+    } catch {
+      /* storage blocked: fall back to the default */
+    }
+    return typeof initial === "function" ? (initial as () => T)() : initial
+  })
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(`ob-view-${key}`, JSON.stringify(value))
+    } catch {
+      /* ignore */
+    }
+  }, [key, value])
+  return [value, setValue] as const
+}
 const money = (n: number) =>
   `R${n.toLocaleString("en-ZA", { maximumFractionDigits: 2, minimumFractionDigits: n % 1 ? 2 : 0 })}`
 const today = () => new Date().toISOString().slice(0, 10)
@@ -197,96 +263,136 @@ function LocationPicker({
   value: string
   onChange: (name: string, point: Point) => void
 }) {
-  const [search, setSearch] = useState("")
+  const [query, setQuery] = useState(value)
   const [open, setOpen] = useState(false)
+  const [online, setOnline] = useState<Place[]>([])
+  const [searching, setSearching] = useState(false)
+  const [locating, setLocating] = useState(false)
   const [error, setError] = useState("")
+  useEffect(() => setQuery(value), [value])
+  useEffect(() => {
+    if (!open || query.trim().length < 3) {
+      setOnline([])
+      return
+    }
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => {
+      setSearching(true)
+      searchPlacesOnline(query, ctrl.signal).then((r) => {
+        if (!ctrl.signal.aborted) {
+          setOnline(r)
+          setSearching(false)
+        }
+      })
+    }, 450)
+    return () => {
+      clearTimeout(timer)
+      ctrl.abort()
+      setSearching(false)
+    }
+  }, [query, open])
+  const local = matchPlaces(query, 6)
+  const results = [
+    ...local,
+    ...online.filter(
+      (o) => !local.some((l) => l.name.toLowerCase() === o.name.toLowerCase() && l.province === o.province),
+    ),
+  ]
+  const choose = (p: Place) => {
+    const point = { lat: Math.round(p.lat * 1000) / 1000, lng: Math.round(p.lng * 1000) / 1000 }
+    rememberProvince(point, p.province)
+    onChange(p.name, point)
+    setQuery(p.name)
+    setOpen(false)
+    setError("")
+  }
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setError("Location isn't available in this browser. Type your area instead.")
+      return
+    }
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const point = {
+          lat: Math.round(pos.coords.latitude * 1000) / 1000,
+          lng: Math.round(pos.coords.longitude * 1000) / 1000,
+        }
+        const found = await describePoint(point)
+        rememberProvince(point, found.province)
+        onChange(found.name, point)
+        setQuery(found.name)
+        setLocating(false)
+        setError("")
+      },
+      () => {
+        setLocating(false)
+        setError("Location permission wasn't given. Type your area instead.")
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
+    )
+  }
   return (
     <div className="relative">
       <div className="flex gap-2">
-        <Button
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="field flex items-center justify-between text-left"
-        >
-          <span>{value || "Choose a suburb"}</span>
-          <ChevronDown size={17} />
-        </Button>
+        <div className="relative min-w-0 flex-1">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <Input
+            className="field !pl-9"
+            placeholder="Type a suburb, town or city"
+            value={query}
+            autoComplete="off"
+            onFocus={() => setOpen(true)}
+            onBlur={() => setTimeout(() => setOpen(false), 200)}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setOpen(true)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                if (results[0]) choose(results[0])
+              }
+            }}
+          />
+        </div>
         <Button
           type="button"
           title="Use my current location"
+          aria-label="Use my current location"
           className="btn-secondary shrink-0 !px-3"
-          onClick={() => {
-            if (!navigator.geolocation) {
-              setError("Location is not available in this browser.")
-              return
-            }
-            if (
-              !window.confirm(
-                "Allow this browser to share your approximate location? We round it to about 1 km.",
-              )
-            )
-              return
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                const point = {
-                  lat: Math.round(pos.coords.latitude * 1000) / 1000,
-                  lng: Math.round(pos.coords.longitude * 1000) / 1000,
-                }
-                const nearest = [...SUBURBS].sort(
-                  (a, b) =>
-                    (a.lat - point.lat) ** 2 +
-                    (a.lng - point.lng) ** 2 -
-                    ((b.lat - point.lat) ** 2 + (b.lng - point.lng) ** 2),
-                )[0]
-                onChange(nearest.name, point)
-                setError("")
-              },
-              () =>
-                setError(
-                  "Location permission was not granted. Choose a suburb instead.",
-                ),
-            )
-          }}
+          disabled={locating}
+          onClick={useMyLocation}
         >
           <Navigation size={18} />
         </Button>
       </div>
       <p className="mt-1 text-xs text-stone-500">
-        Use my current location requires browser permission. Others only see
-        your suburb.
+        {locating
+          ? "Finding your location…"
+          : "Search any place in South Africa, or tap the arrow to use your location. Others only see your suburb."}
       </p>
       {error && <p className="text-xs text-red-700">{error}</p>}
       {open && (
         <div className="absolute z-30 mt-2 max-h-72 w-full overflow-auto rounded-2xl border border-stone-200 bg-white p-2 shadow-xl">
-          <div className="flex items-center gap-2 px-2">
-            <Search size={16} />
-            <Input
-              autoFocus
-              className="w-full p-2 outline-none"
-              placeholder="Search Johannesburg suburbs"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          {SUBURBS.filter((s) =>
-            s.name.toLowerCase().includes(search.toLowerCase()),
-          ).map((s) => (
+          {results.map((p) => (
             <Button
               type="button"
-              key={s.name}
+              key={`${p.name}-${p.lat}-${p.lng}`}
               className="block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-stone-100"
-              onClick={() => {
-                onChange(s.name, {
-                  lat: Math.round(s.lat * 1000) / 1000,
-                  lng: Math.round(s.lng * 1000) / 1000,
-                })
-                setOpen(false)
-                setSearch("")
-              }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => choose(p)}
             >
-              {s.name}
+              <span className="font-semibold">{p.name}</span>
+              <span className="block text-xs text-stone-500">{p.detail || p.province}</span>
             </Button>
           ))}
+          {searching && <p className="px-3 py-2 text-xs text-stone-500">Searching all of South Africa…</p>}
+          {!searching && !results.length && (
+            <p className="px-3 py-2 text-xs text-stone-500">
+              No places found for "{query}". Check the spelling or try a nearby town.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -295,47 +401,81 @@ function LocationPicker({
 
 export default function App() {
   const [store, setStore] = useState<Store>(loadStore)
+  const [session, setSession] = useState<Session | null>(loadSession)
   const [path, setPath] = useState(currentRoute)
-  const [role, setRole] = useState<Role>(() =>
-    currentRoute().startsWith("/business")
-      ? "business"
-      : currentRoute().startsWith("/admin")
-        ? "admin"
-        : "youth",
-  )
-  const [selectedYouth, setSelectedYouth] = useState(
-    () => localStorage.getItem("opportunity-bridge-selected-youth") || "thandi",
-  )
-  const [selectedBusiness, setSelectedBusiness] = useState("DEMO-0001")
   const [toast, setToast] = useState("")
-  const youth =
-    store.youth.find((y) => y.id === selectedYouth) || store.youth[0]
-  const business =
-    store.businesses.find((b) => b.id === selectedBusiness) ||
-    store.businesses[0]
+  const [, setTick] = useState(0)
   const update = (fn: (s: Store) => Store) =>
     setStore((prev) => fn(structuredClone(prev)))
+
+  // Who is signed in, re-checked against the stored accounts on every render.
+  const account =
+    session?.kind === "account"
+      ? store.accounts.find((a) => a.id === session.accountId) || null
+      : null
+  const adminActive = session?.kind === "admin" && session.until > Date.now()
+  const role: Role | null = adminActive ? "admin" : account ? account.role : null
+  const youth =
+    account?.role === "youth" && account.profileId
+      ? store.youth.find((y) => y.id === account.profileId)
+      : undefined
+  const business =
+    account?.role === "business" && account.profileId
+      ? store.businesses.find((b) => b.id === account.profileId)
+      : undefined
+  const needsSetup = !!account && !youth && !business
+  const setupPath = account ? `/setup/${account.role}` : ""
+
   useEffect(() => {
     saveStore(store)
   }, [store])
   useEffect(() => {
-    // Keep the menu and role toggle in step with the page being shown,
-    // including when a page is opened directly from a link or after a refresh.
-    if (path.startsWith("/business")) setRole("business")
-    else if (path.startsWith("/admin")) setRole("admin")
-    else if (
-      ["/matches", "/applications", "/week", "/profile", "/record", "/opportunities", "/signup"].includes(path)
-    )
-      setRole("youth")
-  }, [path])
-
+    saveSession(session)
+  }, [session])
   useEffect(() => {
-    localStorage.setItem("opportunity-bridge-selected-youth", selectedYouth)
-  }, [selectedYouth])
+    // Tampered or stale session (account removed, role edited, admin time up): sign out.
+    if (session?.kind === "account" && !account) setSession(null)
+    if (session?.kind === "admin" && session.until <= Date.now()) {
+      setSession(null)
+      setToast("Admin session ended. Enter the admin code again.")
+    }
+  })
   useEffect(() => {
-    const onPop = () => setPath(currentRoute())
+    const timer = setInterval(() => setTick((t) => t + 1), 30_000)
+    return () => clearInterval(timer)
+  }, [])
+  // Back button and back swipe: every page is its own history entry, so back returns to the
+  // previous page. A hidden "exit guard" entry sits under the first page: reaching it shows
+  // "Swipe back again to exit", and a second back within 2 seconds leaves the app.
+  const lastBackAt = useRef(0)
+  useEffect(() => {
+    const arm = () => {
+      if (!history.state?.ob) history.replaceState({ ob: "guard" }, "", `#${currentRoute()}`)
+      if (history.state?.ob === "guard") history.pushState({ ob: "page" }, "", `#${currentRoute()}`)
+    }
+    arm()
+    // Coming back into the app with forward, or from the browser's page cache.
+    const onShow = (e: PageTransitionEvent) => e.persisted && arm()
+    window.addEventListener("pageshow", onShow)
+    const onPop = (e: PopStateEvent) => {
+      if (e.state?.ob === "guard") {
+        // First back on the first page: stay put and warn. The next back within 2 seconds
+        // leaves the app (the browser or phone handles it). After 2 seconds the guard is re-armed.
+        const armedAt = Date.now()
+        lastBackAt.current = armedAt
+        setToast("Swipe back again to exit")
+        setTimeout(() => {
+          if (lastBackAt.current === armedAt && history.state?.ob === "guard")
+            history.pushState({ ob: "page" }, "", `#${currentRoute()}`)
+        }, 2000)
+      }
+      setPath(currentRoute())
+    }
     window.addEventListener("popstate", onPop)
-    return () => window.removeEventListener("popstate", onPop)
+    return () => {
+      window.removeEventListener("popstate", onPop)
+      window.removeEventListener("pageshow", onShow)
+    }
   }, [])
   useEffect(() => {
     if (toast) {
@@ -344,27 +484,60 @@ export default function App() {
     }
   }, [toast])
   const go = (url: string) => {
-    history.pushState({}, "", `#${url}`)
+    if (url !== currentRoute()) history.pushState({ ob: "page" }, "", `#${url}`)
     setPath(url)
     window.scrollTo(0, 0)
   }
-  const switchRole = (next: Role) => {
-    setRole(next)
-    go(
-      next === "youth"
-        ? "/matches"
-        : next === "business"
-          ? "/business"
-          : "/admin",
-    )
+  // Used for redirects, sign-in and sign-out so back never lands on a page you were bounced from.
+  const replace = (url: string) => {
+    history.replaceState({ ob: history.state?.ob === "guard" ? "guard" : "page" }, "", `#${url}`)
+    setPath(url)
+    window.scrollTo(0, 0)
   }
+
+  // Page guard: every route is checked by lib/access.ts.
+  const signedInOnlyPublic = ["/signin", "/signup/youth", "/signup/business", "/admin-access"]
+  let redirect: { to: string; message?: string } | null = null
+  if (path === "/demo") redirect = { to: "/" }
+  else if (path === "/" && role && !needsSetup) redirect = { to: homeFor(role) }
+  else if (needsSetup && path !== setupPath && path !== "/privacy" && path !== "/")
+    redirect = { to: setupPath }
+  else if (!needsSetup && role && (signedInOnlyPublic.includes(path) || path.startsWith("/setup/")))
+    redirect = { to: homeFor(role) }
+  else if (!canAccess(role, path))
+    redirect = role
+      ? { to: homeFor(role), message: `That page is for ${ownerLabel(path)}.` }
+      : { to: "/signin", message: "Please sign in first." }
+  useEffect(() => {
+    if (redirect) {
+      replace(redirect.to)
+      if (redirect.message) setToast(redirect.message)
+    }
+  })
+
   const record = (actor: string, action: string) =>
     update((s) => {
       s.audit.unshift(audit(actor, action))
       s.audit = s.audit.slice(0, 50)
       return s
     })
+  const signIn = (acc: Account) => {
+    setSession({ kind: "account", accountId: acc.id })
+    record(acc.email, `Signed in as ${acc.role}`)
+    replace(acc.profileId ? homeFor(acc.role) : `/setup/${acc.role}`)
+  }
+  const signOut = () => {
+    setSession(null)
+    replace("/")
+    setToast("Signed out.")
+  }
+  const actorName = youth?.name || business?.name || (role === "admin" ? "Admin" : "Visitor")
   const report = (target: string, by: string) => {
+    const mine = store.reports.filter((r) => r.by === by && r.at).map((r) => r.at!)
+    if (!reportAllowed(mine)) {
+      setToast("You've sent several reports in the last hour. Please try again later.")
+      return
+    }
     const reason = window.prompt("What would you like to report?")
     if (!reason?.trim()) return
     update((s) => {
@@ -372,8 +545,9 @@ export default function App() {
         id: crypto.randomUUID(),
         target,
         by,
-        reason: reason.trim(),
+        reason: reason.trim().slice(0, 500),
         status: "Open",
+        at: new Date().toISOString(),
       })
       s.audit.unshift(audit(by, `Reported ${target}`))
       return s
@@ -389,20 +563,11 @@ export default function App() {
       return
     update((s) => {
       if (!s.blocked.includes(target)) s.blocked.push(target)
-      s.audit.unshift(audit(youth.name, `Blocked ${target}`))
+      s.audit.unshift(audit(actorName, `Blocked ${target}`))
       return s
     })
-    setToast("Blocked. You can reset the demo in Admin.")
+    setToast("Blocked.")
   }
-  const ownApplications = store.applications.filter(
-    (a) => a.youthId === youth.id,
-  )
-  const businessPlacements = store.placements.filter(
-    (p) => p.businessId === business.id,
-  )
-  const businessApplications = store.applications.filter((a) =>
-    businessPlacements.some((p) => p.id === a.placementId),
-  )
   const tabs =
     role === "youth"
       ? [
@@ -418,18 +583,31 @@ export default function App() {
             { name: "ETI", url: "/business/eti", icon: Wallet },
             { name: "Ledger", url: "/business/ledger", icon: ClipboardCheck },
           ]
-        : [
-            { name: "Overview", url: "/admin", icon: LayoutDashboard },
-            { name: "Reports", url: "/admin/reports", icon: Flag },
-            { name: "Verify", url: "/admin/verify", icon: BadgeCheck },
-            { name: "Audit", url: "/admin/audit", icon: FileText },
-          ]
+        : role === "admin"
+          ? [
+              { name: "Overview", url: "/admin", icon: LayoutDashboard },
+              { name: "Reports", url: "/admin/reports", icon: Flag },
+              { name: "Verify", url: "/admin/verify", icon: BadgeCheck },
+              { name: "Audit", url: "/admin/audit", icon: FileText },
+            ]
+          : []
+  const inWorkspace = !!role && !needsSetup && !isPublic(path) && !redirect
+  const initials =
+    role === "admin"
+      ? "AD"
+      : (youth?.name || business?.name || account?.email || "?")
+          .split(" ")
+          .slice(0, 2)
+          .map((s) => s[0])
+          .join("")
+          .toUpperCase()
+
   return (
     <div className="min-h-screen bg-stone-100 text-emerald-950">
       <header className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 backdrop-blur-lg">
         <div className="mx-auto flex h-18 max-w-7xl items-center justify-between gap-3 px-4 md:px-8">
           <Button
-            onClick={() => go("/demo")}
+            onClick={() => go(role && !needsSetup ? homeFor(role) : "/")}
             className="flex items-center gap-2.5 text-left"
           >
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800 text-white">
@@ -441,32 +619,12 @@ export default function App() {
               <span className="text-green-700">bridge.</span>
             </span>
           </Button>
-          <nav
-            className="hidden items-center gap-1 rounded-full bg-stone-100 p-1 sm:flex"
-            aria-label="Switch role"
-          >
-            <Button
-              onClick={() => switchRole("youth")}
-              className={`rounded-full px-4 py-2 text-xs font-bold ${
-                role === "youth"
-                  ? "bg-white text-emerald-800 shadow-sm"
-                  : "text-stone-500"
-              }`}
-            >
-              For youth
-            </Button>
-            <Button
-              onClick={() => switchRole("business")}
-              className={`rounded-full px-4 py-2 text-xs font-bold ${
-                role === "business"
-                  ? "bg-white text-emerald-800 shadow-sm"
-                  : "text-stone-500"
-              }`}
-            >
-              For business
-            </Button>
-          </nav>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
+            {role && (
+              <span className="hidden rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-emerald-800 sm:inline">
+                {role === "youth" ? "Youth" : role === "business" ? "Business" : "Admin"}
+              </span>
+            )}
             <Button
               onClick={() => go("/privacy")}
               title="Privacy"
@@ -475,133 +633,117 @@ export default function App() {
             >
               <Shield size={19} />
             </Button>
-            <Button
-              onClick={() => go("/demo")}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-sm font-extrabold text-emerald-800"
-              title="Switch demo profile"
-            >
-              {role === "business"
-                ? business.name
-                    .split(" ")
-                    .slice(0, 2)
-                    .map((s) => s[0])
-                    .join("")
-                : role === "admin"
-                  ? "AD"
-                  : youth.name
-                      .split(" ")
-                      .map((s) => s[0])
-                      .join("")}
-            </Button>
+            {role ? (
+              <>
+                <span
+                  className="hidden h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-sm font-extrabold text-emerald-800 min-[360px]:flex"
+                  title={actorName}
+                >
+                  {initials}
+                </span>
+                <Button onClick={signOut} className="btn-secondary !min-h-10 !px-3 !py-2 whitespace-nowrap text-xs">
+                  Sign out
+                </Button>
+              </>
+            ) : (
+              <Button onClick={() => go("/signin")} className="btn-primary !min-h-10 !px-4 !py-2 text-xs">
+                Sign in
+              </Button>
+            )}
           </div>
         </div>
-        <nav
-          className="flex h-10 items-center justify-center gap-1 border-t border-stone-100 bg-white sm:hidden"
-          aria-label="Switch role"
-        >
-          <Button
-            onClick={() => switchRole("youth")}
-            className={`rounded-full px-5 py-1.5 text-xs font-bold ${
-              role === "youth"
-                ? "bg-green-100 text-emerald-800"
-                : "text-stone-500"
-            }`}
-          >
-            Youth
-          </Button>
-          <Button
-            onClick={() => switchRole("business")}
-            className={`rounded-full px-5 py-1.5 text-xs font-bold ${
-              role === "business"
-                ? "bg-green-100 text-emerald-800"
-                : "text-stone-500"
-            }`}
-          >
-            Business
-          </Button>
-        </nav>
       </header>
       <div className="mx-auto flex max-w-7xl gap-8 px-4 pb-28 pt-6 md:px-8 md:pb-12 md:pt-9">
-        <aside className="sticky top-28 hidden h-fit w-56 shrink-0 lg:block">
-          <p className="eyebrow mb-4 px-3">
-            {role === "youth"
-              ? "Your workspace"
-              : role === "business"
-                ? business.name
-                : "Admin workspace"}
-          </p>
-          <nav className="space-y-1">
-            {tabs.map((t) => (
-              <Button
-                key={t.url}
-                onClick={() => go(t.url)}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold ${
-                  path === t.url
-                    ? "bg-green-100 text-emerald-800"
-                    : "text-stone-500 hover:bg-white"
-                }`}
-              >
-                <t.icon size={19} />
-                {t.name}
-              </Button>
-            ))}
-          </nav>
-          <div className="my-5 h-px bg-stone-200" />
-          {role === "youth" ? (
-            <>
-              <Button
-                onClick={() => go("/record")}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
-              >
-                <BadgeCheck size={19} />
-                Work record
-              </Button>
-              <Button
-                onClick={() => go("/opportunities")}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
-              >
-                <Sparkles size={19} />
-                Opportunities
-              </Button>
-            </>
-          ) : role === "business" ? (
-            <>
-              <Button
-                onClick={() => go("/business/post")}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
-              >
-                <Plus size={19} />
-                Post a placement
-              </Button>
-              <Button
-                onClick={() => go("/business/onboarding")}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
-              >
-                <BriefcaseBusiness size={19} />
-                Business profile
-              </Button>
-            </>
-          ) : null}
-          <Button
-            onClick={() => go("/demo")}
-            className="mt-5 flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
-          >
-            <Menu size={19} />
-            Switch demo
-          </Button>
-        </aside>
+        {inWorkspace && (
+          <aside className="sticky top-28 hidden h-fit w-56 shrink-0 lg:block">
+            <p className="eyebrow mb-4 px-3">
+              {role === "youth"
+                ? "Your workspace"
+                : role === "business"
+                  ? business?.name
+                  : "Admin workspace"}
+            </p>
+            <nav className="space-y-1">
+              {tabs.map((t) => (
+                <Button
+                  key={t.url}
+                  onClick={() => go(t.url)}
+                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold ${
+                    path === t.url
+                      ? "bg-green-100 text-emerald-800"
+                      : "text-stone-500 hover:bg-white"
+                  }`}
+                >
+                  <t.icon size={19} />
+                  {t.name}
+                </Button>
+              ))}
+            </nav>
+            <div className="my-5 h-px bg-stone-200" />
+            {role === "youth" ? (
+              <>
+                <Button
+                  onClick={() => go("/record")}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
+                >
+                  <BadgeCheck size={19} />
+                  Work record
+                </Button>
+                <Button
+                  onClick={() => go("/opportunities")}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
+                >
+                  <Sparkles size={19} />
+                  Opportunities
+                </Button>
+              </>
+            ) : role === "business" ? (
+              <>
+                <Button
+                  onClick={() => go("/business/post")}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
+                >
+                  <Plus size={19} />
+                  Post a placement
+                </Button>
+                <Button
+                  onClick={() => go("/business/onboarding")}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm font-semibold text-stone-500"
+                >
+                  <BriefcaseBusiness size={19} />
+                  Business profile
+                </Button>
+              </>
+            ) : null}
+          </aside>
+        )}
         <main className="min-w-0 flex-1">
-          {path === "/demo" ? (
-            <Demo
+          {redirect ? null : path === "/" ? (
+            <Landing go={go} role={needsSetup ? null : role} />
+          ) : path === "/signin" ? (
+            <SignIn store={store} signIn={signIn} go={go} />
+          ) : path === "/signup/youth" || path === "/signup/business" ? (
+            <CreateAccount
+              role={path === "/signup/youth" ? "youth" : "business"}
+              store={store}
+              update={update}
               go={go}
-              enter={(next) => {
-                if (next === "youth") setSelectedYouth("thandi")
-                if (next === "business") setSelectedBusiness("DEMO-0001")
-                switchRole(next)
+              onCreated={(acc) => {
+                setSession({ kind: "account", accountId: acc.id })
+                go(`/setup/${acc.role}`)
+              }}
+            />
+          ) : path === "/admin-access" ? (
+            <AdminAccess
+              record={record}
+              onGranted={() => {
+                setSession({ kind: "admin", until: Date.now() + ADMIN_SESSION_MS })
+                go("/admin")
+                setToast("Admin access granted for 30 minutes.")
               }}
             />
           ) : path === "/privacy" ? (
-            <Privacy go={go} />
+            <Privacy go={go} back={role && !needsSetup ? homeFor(role) : "/"} />
           ) : path.startsWith("/shared/") ? (
             store.youth.find((y) => y.id === path.split("/")[2]) ? (
               <WorkRecord
@@ -616,17 +758,33 @@ export default function App() {
                 text="This record is not available."
               />
             )
-          ) : path === "/signup" ? (
+          ) : path === "/setup/youth" && account ? (
             <Signup
               update={update}
               go={go}
               toast={setToast}
               onCreated={(id) => {
-                setSelectedYouth(id)
-                setRole("youth")
+                update((s) => {
+                  const acc = s.accounts.find((a) => a.id === account.id)
+                  if (acc && !acc.profileId) acc.profileId = id
+                  return s
+                })
               }}
             />
-          ) : path === "/matches" || path === "/" ? (
+          ) : path === "/setup/business" && account ? (
+            <NewBusiness
+              store={store}
+              update={update}
+              onCreated={(id) => {
+                update((s) => {
+                  const acc = s.accounts.find((a) => a.id === account.id)
+                  if (acc && !acc.profileId) acc.profileId = id
+                  return s
+                })
+                go("/business")
+              }}
+            />
+          ) : youth && path === "/matches" ? (
             <Matches
               youth={youth}
               store={store}
@@ -637,7 +795,7 @@ export default function App() {
               toast={setToast}
               record={record}
             />
-          ) : path === "/applications" ? (
+          ) : youth && path === "/applications" ? (
             <Applications
               youth={youth}
               store={store}
@@ -645,7 +803,7 @@ export default function App() {
               report={report}
               block={block}
             />
-          ) : path === "/week" ? (
+          ) : youth && path === "/week" ? (
             <MyWeek
               youth={youth}
               store={store}
@@ -654,7 +812,7 @@ export default function App() {
               block={block}
               toast={setToast}
             />
-          ) : path === "/profile" ? (
+          ) : youth && path === "/profile" ? (
             <Profile
               youth={youth}
               update={update}
@@ -664,37 +822,27 @@ export default function App() {
               report={report}
               block={block}
             />
-          ) : path === "/record" ? (
+          ) : youth && path === "/record" ? (
             <WorkRecord youth={youth} store={store} go={go} />
-          ) : path === "/opportunities" ? (
+          ) : youth && path === "/opportunities" ? (
             <Opportunities youth={youth} go={go} />
-          ) : path === "/business" ? (
+          ) : business && path === "/business" ? (
             <Dashboard store={store} business={business} go={go} />
-          ) : path === "/business/onboarding/new" ? (
-            <NewBusiness
-              store={store}
-              update={update}
-              onCreated={(id) => {
-                setSelectedBusiness(id)
-                setRole("business")
-                go("/business")
-              }}
-            />
-          ) : path === "/business/onboarding" ? (
+          ) : business && path === "/business/onboarding" ? (
             <BusinessProfile
               business={business}
               update={update}
               toast={setToast}
               go={go}
             />
-          ) : path === "/business/post" ? (
+          ) : business && path === "/business/post" ? (
             <PostPlacement
               business={business}
               update={update}
               go={go}
               toast={setToast}
             />
-          ) : path === "/business/applicants" ? (
+          ) : business && path === "/business/applicants" ? (
             <Applicants
               store={store}
               business={business}
@@ -704,9 +852,9 @@ export default function App() {
               report={report}
               block={block}
             />
-          ) : path === "/business/eti" ? (
+          ) : business && path === "/business/eti" ? (
             <ETIPage store={store} business={business} record={record} />
-          ) : path === "/business/ledger" ? (
+          ) : business && path === "/business/ledger" ? (
             <Ledger
               store={store}
               business={business}
@@ -716,7 +864,7 @@ export default function App() {
               report={report}
               block={block}
             />
-          ) : path.startsWith("/admin") ? (
+          ) : role === "admin" && path.startsWith("/admin") ? (
             <Admin
               path={path}
               store={store}
@@ -724,8 +872,6 @@ export default function App() {
               go={go}
               reset={() => {
                 setStore(seedStore())
-                setSelectedYouth("thandi")
-                setSelectedBusiness("DEMO-0001")
                 setToast("Demo data reset.")
                 go("/admin")
               }}
@@ -736,8 +882,8 @@ export default function App() {
               title="Page not found"
               text="That page isn't here."
               action={
-                <Button className="btn-primary" onClick={() => go("/demo")}>
-                  Go to demo
+                <Button className="btn-primary" onClick={() => go(role ? homeFor(role) : "/")}>
+                  Go home
                 </Button>
               }
             />
@@ -752,38 +898,30 @@ export default function App() {
           {toast}
         </div>
       )}
-      {path !== "/demo" &&
-        path !== "/privacy" &&
-        !path.startsWith("/shared/") && (
-          <nav
-            aria-label="Main navigation"
-            className="fixed bottom-0 left-0 right-0 z-40 flex h-18 items-center justify-around border-t border-stone-200 bg-white/95 px-1 pb-1 backdrop-blur-lg lg:hidden"
-          >
-            {tabs.map((t) => (
-              <Button
-                key={t.url}
-                onClick={() => go(t.url)}
-                className={`flex min-w-0 flex-1 flex-col items-center gap-1 py-2 text-xs font-bold ${
-                  path === t.url ? "text-emerald-800" : "text-stone-400"
-                }`}
-              >
-                <t.icon size={21} strokeWidth={path === t.url ? 2.5 : 2} />
-                {t.name}
-              </Button>
-            ))}
-          </nav>
-        )}
+      {inWorkspace && (
+        <nav
+          aria-label="Main navigation"
+          className="fixed bottom-0 left-0 right-0 z-40 flex h-18 items-center justify-around border-t border-stone-200 bg-white/95 px-1 pb-1 backdrop-blur-lg lg:hidden"
+        >
+          {tabs.map((t) => (
+            <Button
+              key={t.url}
+              onClick={() => go(t.url)}
+              className={`flex min-w-0 flex-1 flex-col items-center gap-1 py-2 text-xs font-bold ${
+                path === t.url ? "text-emerald-800" : "text-stone-400"
+              }`}
+            >
+              <t.icon size={21} strokeWidth={path === t.url ? 2.5 : 2} />
+              {t.name}
+            </Button>
+          ))}
+        </nav>
+      )}
     </div>
   )
 }
 
-function Demo({
-  go,
-  enter,
-}: {
-  go: (p: string) => void
-  enter: (role: Role) => void
-}) {
+function Landing({ go, role }: { go: (p: string) => void; role: Role | null }) {
   return (
     <div className="mx-auto max-w-4xl">
       <div className="relative overflow-hidden rounded-3xl bg-emerald-900 px-7 py-12 text-white md:px-12 md:py-16">
@@ -798,87 +936,333 @@ function Demo({
             <span className="text-emerald-200">A way forward.</span>
           </Heading1>
           <p className="mt-5 max-w-lg text-sm leading-7 text-slate-300">
-            Real work experience for young South Africans. A simpler way for
-            local businesses to open the door.
+            Real work experience for young South Africans, matched by skills and by
+            what it costs to get there. A simpler, lower-risk way for local
+            businesses to open the door.
+          </p>
+          {role && (
+            <Button className="btn-secondary mt-6" onClick={() => go(homeFor(role))}>
+              Go to my workspace <ArrowRight size={16} />
+            </Button>
+          )}
+        </div>
+      </div>
+      {!role && (
+        <div className="mt-8">
+          <p className="eyebrow mb-3">Get started</p>
+          <Heading2 className="heading mb-5 text-2xl font-extrabold">
+            Who are you joining as?
+          </Heading2>
+          <div className="grid gap-4 md:grid-cols-2">
+            {[
+              {
+                title: "I'm looking for work experience",
+                detail: "Find placements near you that you can afford to travel to, and build a verified work record.",
+                icon: Users,
+                tag: "Young person",
+                url: "/signup/youth",
+              },
+              {
+                title: "I'm a business",
+                detail: "Post placements, choose who to take on, see the tax incentive you may claim, and sign off weekly work.",
+                icon: BriefcaseBusiness,
+                tag: "Business",
+                url: "/signup/business",
+              },
+            ].map((item) => (
+              <Button
+                key={item.tag}
+                onClick={() => go(item.url)}
+                className="card group flex min-h-48 flex-col items-start p-6 text-left transition hover:-translate-y-1 hover:border-slate-400 hover:shadow-lg"
+              >
+                <span className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-slate-200 text-emerald-800">
+                  <item.icon size={21} />
+                </span>
+                <span className="eyebrow mb-1">{item.tag}</span>
+                <span className="heading text-lg font-extrabold leading-6">{item.title}</span>
+                <span className="mt-2 text-sm text-stone-500">{item.detail}</span>
+                <span className="mt-auto flex items-center gap-1 self-end pt-4 text-sm font-bold text-green-700">
+                  Create an account <ArrowRight size={17} className="transition group-hover:translate-x-1" />
+                </span>
+              </Button>
+            ))}
+          </div>
+          <p className="mt-5 text-sm text-stone-500">
+            Already have an account?{" "}
+            <Button className="font-bold text-emerald-800 underline underline-offset-4" onClick={() => go("/signin")}>
+              Sign in
+            </Button>{" "}
+            · Judges can use the demo accounts on the sign-in page.
           </p>
         </div>
+      )}
+      <div className="mt-10 grid gap-4 md:grid-cols-3">
+        {[
+          ["No approval needed", "The Employment Tax Incentive is claimed by the employer on the monthly EMP201. Nobody has to say yes first."],
+          ["Travel-aware matching", "Placements that would eat more than 30% of a stipend in fares are flagged, never hidden."],
+          ["Evidence ledger", "Weekly work logged by the young person and signed off by the supervisor: proof for SARS, a record for the CV."],
+        ].map(([t, d]) => (
+          <div key={t} className="card p-5">
+            <p className="heading font-extrabold">{t}</p>
+            <p className="mt-1 text-sm leading-6 text-stone-500">{d}</p>
+          </div>
+        ))}
       </div>
-      <div className="mt-8">
-        <p className="eyebrow mb-3">Explore the demo</p>
-        <Heading2 className="heading mb-5 text-2xl font-extrabold">
-          Choose your view
-        </Heading2>
-        <div className="grid gap-4 md:grid-cols-3">
-          {[
-            {
-              title: "Continue as Thandi (youth)",
-              detail: "Find a placement close to home.",
-              icon: Users,
-              action: () => enter("youth"),
-              tag: "Youth",
-            },
-            {
-              title: "Continue as Mama Joy's Bakery (business)",
-              detail: "Meet applicants and manage your placement.",
-              icon: BriefcaseBusiness,
-              action: () => enter("business"),
-              tag: "Business",
-            },
-            {
-              title: "Continue as Admin",
-              detail: "Review reports and verification.",
-              icon: Shield,
-              action: () => enter("admin"),
-              tag: "Admin",
-            },
-          ].map((item) => (
-            <Button
-              key={item.tag}
-              onClick={item.action}
-              className="card group flex min-h-52 flex-col items-start p-6 text-left transition hover:-translate-y-1 hover:border-slate-400 hover:shadow-lg"
-            >
-              <span className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-slate-200 text-emerald-800">
-                <item.icon size={21} />
-              </span>
-              <span className="eyebrow mb-1">{item.tag}</span>
-              <span className="heading text-lg font-extrabold leading-6">
-                {item.title}
-              </span>
-              <span className="mt-2 text-sm text-stone-500">{item.detail}</span>
-              <ArrowRight
-                className="mt-auto self-end text-green-700 transition group-hover:translate-x-1"
-                size={19}
-              />
-            </Button>
-          ))}
-        </div>
-        <div className="mt-5 flex flex-wrap items-center gap-4 text-sm">
-          <Button
-            className="font-bold text-emerald-800 underline underline-offset-4"
-            onClick={() => go("/signup")}
-          >
-            New youth? Start with consent
-          </Button>
-          <Button
-            className="font-bold text-emerald-800 underline underline-offset-4"
-            onClick={() => go("/business/onboarding/new")}
-          >
-            Set up a business
-          </Button>
-        </div>
-      </div>
+      <p className="mt-10 border-t border-stone-200 pt-5 text-xs text-stone-400">
+        <Button className="font-semibold underline underline-offset-4" onClick={() => go("/admin-access")}>
+          Admin access
+        </Button>{" "}
+        · <Button className="font-semibold underline underline-offset-4" onClick={() => go("/privacy")}>Privacy</Button>{" "}
+        · Prototype: accounts and data are stored in this browser only.
+      </p>
     </div>
   )
 }
 
-function Privacy({ go }: { go: (p: string) => void }) {
+const PROTOTYPE_NOTE =
+  "Prototype: accounts and data are stored in this browser only. Production will use server-side sign-in and a database."
+
+function LockedNote({ ms }: { ms: number }) {
+  const mins = Math.ceil(ms / 60000)
+  return (
+    <p className="rounded-xl bg-orange-50 px-4 py-3 text-sm font-semibold text-red-700">
+      Too many attempts. Try again in {mins} minute{mins === 1 ? "" : "s"}.
+    </p>
+  )
+}
+
+function SignIn({
+  store,
+  signIn,
+  go,
+}: {
+  store: Store
+  signIn: (a: Account) => void
+  go: (p: string) => void
+}) {
+  const [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [locked, setLocked] = useState(lockRemaining("signin"))
+  const attempt = async (mail: string, pass: string) => {
+    const left = lockRemaining("signin")
+    if (left) {
+      setLocked(left)
+      return
+    }
+    setBusy(true)
+    const acc = store.accounts.find((a) => a.email === mail.trim().toLowerCase())
+    const ok = !!acc && (await hashPassword(pass, acc.salt)) === acc.hash
+    setBusy(false)
+    if (!ok || !acc) {
+      setLocked(recordFailure("signin"))
+      setError("That email and password don't match.")
+      return
+    }
+    clearFailures("signin")
+    signIn(acc)
+  }
+  const demos = store.accounts.filter((a) => a.demo)
+  const label = (a: Account) =>
+    a.role === "youth"
+      ? `${store.youth.find((y) => y.id === a.profileId)?.name.split(" ")[0] || a.email} (youth)`
+      : `${store.businesses.find((b) => b.id === a.profileId)?.name || a.email} (business)`
+  return (
+    <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-[1fr_320px]">
+      <form
+        className="card space-y-5 p-6"
+        onSubmit={(e) => {
+          e.preventDefault()
+          attempt(email, password)
+        }}
+      >
+        <PageIntro eyebrow="Welcome back" title="Sign in" />
+        {locked > 0 && <LockedNote ms={locked} />}
+        <Field label="Email">
+          <Input id="signin-email" className="field" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Field label="Password">
+          <Input id="signin-password" className="field" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red-700">{error}</p>}
+        <Button type="submit" className="btn-primary w-full" disabled={busy || locked > 0}>
+          Sign in <ArrowRight size={16} />
+        </Button>
+        <p className="text-sm text-stone-500">
+          New here?{" "}
+          <Button className="font-bold text-emerald-800 underline" onClick={() => go("/signup/youth")}>Join as a young person</Button>{" "}
+          or{" "}
+          <Button className="font-bold text-emerald-800 underline" onClick={() => go("/signup/business")}>as a business</Button>
+        </p>
+        <p className="text-xs text-stone-400">{PROTOTYPE_NOTE}</p>
+      </form>
+      <aside className="card h-fit space-y-3 p-5">
+        <p className="eyebrow">Demo accounts (fictional)</p>
+        <p className="text-xs text-stone-500">
+          For judges and testing. Each signs in with the same password check as any account
+          (password: {DEMO_PASSWORD}).
+        </p>
+        {demos.map((a) => (
+          <Button
+            key={a.id}
+            className="btn-secondary w-full !justify-start text-left text-xs"
+            disabled={busy || locked > 0}
+            onClick={() => attempt(a.email, DEMO_PASSWORD)}
+          >
+            {label(a)}
+          </Button>
+        ))}
+      </aside>
+    </div>
+  )
+}
+
+function CreateAccount({
+  role,
+  store,
+  update,
+  go,
+  onCreated,
+}: {
+  role: "youth" | "business"
+  store: Store
+  update: (fn: (s: Store) => Store) => void
+  go: (p: string) => void
+  onCreated: (a: Account) => void
+}) {
+  const [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false)
+  return (
+    <div className="mx-auto max-w-xl">
+      <Button onClick={() => go("/")} className="mb-6 flex items-center gap-2 text-sm font-bold text-green-700">
+        <ArrowLeft size={17} /> Back
+      </Button>
+      <PageIntro
+        eyebrow={role === "youth" ? "Young person" : "Business"}
+        title="Create your account"
+        subtitle={
+          role === "youth"
+            ? "Next, you'll choose what we may do with your information and build your profile."
+            : "Next, you'll tell us about your business. Verification is done by an admin."
+        }
+      />
+      <form
+        className="card space-y-5 p-6"
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const mail = email.trim().toLowerCase()
+          const problem =
+            emailProblem(mail) ||
+            passwordProblem(password) ||
+            (password !== confirm ? "The passwords don't match." : null) ||
+            (store.accounts.some((a) => a.email === mail) ? "An account with this email already exists. Sign in instead." : null)
+          if (problem) {
+            setError(problem)
+            return
+          }
+          setBusy(true)
+          const salt = newSalt()
+          const acc: Account = { id: crypto.randomUUID(), email: mail, role, salt, hash: await hashPassword(password, salt) }
+          setBusy(false)
+          update((s) => {
+            s.accounts.push(acc)
+            s.audit.unshift(audit(mail, `Created a ${role} account`))
+            return s
+          })
+          setPassword("")
+          setConfirm("")
+          onCreated(acc)
+        }}
+      >
+        <Field label="Email">
+          <Input id="signup-email" className="field" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Field label="Password" hint="At least 8 characters, with a letter and a number.">
+          <Input id="signup-password" className="field" type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+        <Field label="Confirm password">
+          <Input id="signup-confirm" className="field" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red-700">{error}</p>}
+        <Button type="submit" className="btn-primary w-full" disabled={busy}>
+          Continue <ArrowRight size={16} />
+        </Button>
+        <p className="text-xs text-stone-400">{PROTOTYPE_NOTE}</p>
+      </form>
+    </div>
+  )
+}
+
+function AdminAccess({
+  record,
+  onGranted,
+}: {
+  record: (actor: string, action: string) => void
+  onGranted: () => void
+}) {
+  const [code, setCode] = useState(""),
+    [error, setError] = useState(""),
+    [locked, setLocked] = useState(lockRemaining("admin")),
+    [busy, setBusy] = useState(false)
+  return (
+    <div className="mx-auto max-w-md">
+      <PageIntro
+        eyebrow="Restricted"
+        title="Admin access"
+        subtitle="Admins can't sign up. Enter the admin code you were given."
+      />
+      <form
+        className="card space-y-5 p-6"
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const left = lockRemaining("admin")
+          if (left) {
+            setLocked(left)
+            return
+          }
+          setBusy(true)
+          const ok = await isAdminCode(code)
+          setBusy(false)
+          setCode("")
+          if (!ok) {
+            setLocked(recordFailure("admin"))
+            record("Unknown visitor", "Failed admin code attempt")
+            setError("That code isn't right.")
+            return
+          }
+          clearFailures("admin")
+          record("Admin", "Admin signed in with the admin code")
+          onGranted()
+        }}
+      >
+        {locked > 0 && <LockedNote ms={locked} />}
+        <Field label="Admin code">
+          <Input id="admin-code" className="field" type="password" autoComplete="off" required value={code} onChange={(e) => setCode(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red-700">{error}</p>}
+        <Button type="submit" className="btn-primary w-full" disabled={busy || locked > 0}>
+          Open admin workspace
+        </Button>
+        <p className="text-xs text-stone-400">
+          5 wrong attempts lock this form for 5 minutes. Admin sessions end after 30 minutes. {PROTOTYPE_NOTE}
+        </p>
+      </form>
+    </div>
+  )
+}
+
+function Privacy({ go, back }: { go: (p: string) => void; back: string }) {
   return (
     <div className="mx-auto max-w-3xl">
       <Button
         className="mb-7 flex items-center gap-2 text-sm font-bold text-green-700"
-        onClick={() => go("/demo")}
+        onClick={() => go(back)}
       >
-        <ArrowLeft size={17} /> Back to demo
+        <ArrowLeft size={17} /> Back
       </Button>
       <PageIntro
         eyebrow="Your information"
@@ -910,6 +1294,10 @@ function Privacy({ go }: { go: (p: string) => void }) {
           [
             "Sharing and deletion",
             "Your work record is shareable only if you choose to make it shareable. To ask for your information to be deleted in this prototype, contact the Opportunity Bridge team through the app administrator. This demo stores data in this browser; the Admin reset button clears it.",
+          ],
+          [
+            "Accounts and access",
+            "Passwords and the admin code are stored only as salted SHA-256 hashes. Each account can only open its own role's pages, and repeated wrong attempts lock the form for 5 minutes. Prototype: accounts and data are stored in this browser only. Production will use server-side sign-in and a database.",
           ],
         ].map(([h, p]) => (
           <section key={h}>
@@ -962,12 +1350,6 @@ function Signup({
   ].filter((s) => bio.toLowerCase().includes(s) && !skills.includes(s))
   return (
     <div className="mx-auto max-w-2xl">
-      <Button
-        onClick={() => go("/demo")}
-        className="mb-6 flex items-center gap-2 text-sm font-bold text-green-700"
-      >
-        <ArrowLeft size={17} /> Back
-      </Button>
       <PageIntro
         eyebrow={`Step ${step + 1} of 2`}
         title={step === 0 ? "First, your choice." : "Tell us about yourself."}
@@ -1057,6 +1439,15 @@ function Signup({
               setError("Add your name and choose a suburb.")
               return
             }
+            if (name.trim().length > LIMITS.nameMax) {
+              setError(`Keep your name under ${LIMITS.nameMax} characters.`)
+              return
+            }
+            const ageProblem = youthAgeProblem(ageOn(date, new Date()))
+            if (ageProblem) {
+              setError(ageProblem)
+              return
+            }
             setDob(date)
             const newId = crypto.randomUUID()
             update((s) => {
@@ -1066,10 +1457,11 @@ function Signup({
                 dob: date,
                 suburb,
                 location: point,
+                province: provinceOf({ location: point }),
                 transport,
                 skills,
                 grade,
-                bio,
+                bio: bio.slice(0, LIMITS.bioMax),
                 consent: {
                   processing: new Date().toISOString(),
                   ...(matching ? { matching: new Date().toISOString() } : {}),
@@ -1081,7 +1473,7 @@ function Signup({
             })
             onCreated(newId)
             toast("Profile created. Your ID number was not saved.")
-            go("/profile")
+            go("/matches")
           }}
         >
           <Field label="Your full name">
@@ -1233,12 +1625,44 @@ function Matches({
   toast: (s: string) => void
   record: (actor: string, action: string) => void
 }) {
-  const [radius, setRadius] = useState(10),
-    [mode, setMode] = useState<"list" | "map">("list"),
-    [transport, setTransport] = useState<TravelMode>(youth.transport),
+  const [radius, setRadius] = useTabState(`radius-${youth.id}`, 10),
+    [mode, setMode] = useTabState<"list" | "map">(`mode-${youth.id}`, "list"),
+    [transport, setTransport] = useTabState<TravelMode>(`transport-${youth.id}`, youth.transport),
     [furtherOpen, setFurtherOpen] = useState(false),
     [selected, setSelected] = useState<string | null>(null),
-    [tileFailed, setTileFailed] = useState(false)
+    [tileFailed, setTileFailed] = useState(false),
+    [area, setArea] = useTabState<"near" | Province>(`area-${youth.id}`, () => provinceOf(youth)),
+    [nearPoint, setNearPoint] = useTabState<Point | null>(`near-${youth.id}`, null),
+    [nearName, setNearName] = useTabState(`near-name-${youth.id}`, ""),
+    [locating, setLocating] = useState(false)
+  const origin = nearPoint || youth.location
+  const originName = nearPoint ? nearName : youth.suburb
+  const useNearMe = () => {
+    if (!navigator.geolocation) {
+      toast("Location isn't available in this browser. Choose a province instead.")
+      return
+    }
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const point = {
+          lat: Math.round(pos.coords.latitude * 1000) / 1000,
+          lng: Math.round(pos.coords.longitude * 1000) / 1000,
+        }
+        const found = await describePoint(point)
+        setNearPoint(point)
+        setNearName(found.name)
+        setArea("near")
+        setLocating(false)
+        toast(`Showing opportunities near ${found.name}.`)
+      },
+      () => {
+        setLocating(false)
+        toast("Location permission wasn't given. Showing your home area instead.")
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
+    )
+  }
   const saved = store.savedPlacements?.[youth.id] || []
   const results = useMemo(
     () =>
@@ -1246,14 +1670,15 @@ function Matches({
         .filter(
           (p) =>
             !store.blocked.includes(p.id) &&
-            !store.blocked.includes(p.businessId),
+            !store.blocked.includes(p.businessId) &&
+            (area === "near" || provinceOf(p) === area),
         )
         .map((p) => {
           const b = store.businesses.find((b) => b.id === p.businessId)!
           return {
             p,
             b,
-            result: rankMatch({ ...youth, transport }, {
+            result: rankMatch({ ...youth, location: origin, transport }, {
               ...p,
               location: p.location,
               stipend: p.stipend,
@@ -1261,17 +1686,17 @@ function Matches({
           }
         })
         .sort((a, b) => b.result.score - a.result.score),
-    [store.placements, store.blocked, store.businesses, youth, transport],
+    [store.placements, store.blocked, store.businesses, youth, transport, area, origin],
   )
-  const nearby = results.filter((r) => r.result.travel.directKm <= radius),
-    further = results.filter((r) => r.result.travel.directKm > radius)
+  const nearby =
+      area === "near" ? results.filter((r) => r.result.travel.directKm <= radius) : results,
+    further = area === "near" ? results.filter((r) => r.result.travel.directKm > radius) : []
   const apply = (placement: Placement) => {
-    if (
-      store.applications.some(
-        (a) => a.youthId === youth.id && a.placementId === placement.id,
-      )
-    )
+    const problem = canApply({ role: "youth", youthId: youth.id }, placement.id, store)
+    if (problem) {
+      toast(problem)
       return
+    }
     update((s) => {
       s.applications.unshift({
         id: crypto.randomUUID(),
@@ -1401,7 +1826,7 @@ function Matches({
             className="btn-secondary !min-h-10 !px-3 !py-2 text-xs"
             target="_blank"
             rel="noopener"
-            href={`https://maps.apple.com/?saddr=${youth.location.lat},${youth.location.lng}&daddr=${p.location.lat},${p.location.lng}&dirflg=${
+            href={`https://maps.apple.com/?saddr=${origin.lat},${origin.lng}&daddr=${p.location.lat},${p.location.lng}&dirflg=${
               transport === "walk" ? "w" : "r"
             }`}
           >
@@ -1467,7 +1892,7 @@ function Matches({
           <div className="mt-6 flex items-center gap-2">
             <span className="rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold">
               <MapPin size={12} className="mr-1 inline" />
-              {youth.suburb}
+              {area === "near" ? originName : area}
             </span>
             <span className="rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold">
               {results.length} opportunities
@@ -1515,7 +1940,34 @@ function Matches({
           <SlidersHorizontal size={17} className="text-green-700" /> Find your
           fit
         </div>
+        <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto]">
+          <div>
+            <span className="mb-2 block text-xs font-semibold text-slate-600">Search area</span>
+            <Select
+              aria-label="Search area"
+              className="field"
+              value={area}
+              onChange={(e) => setArea(e.target.value as "near" | Province)}
+            >
+              <option value="near">Near {originName} (choose a radius)</option>
+              {PROVINCES.map((p) => (
+                <option key={p} value={p}>
+                  All of {p}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Button
+            type="button"
+            className="btn-secondary self-end"
+            disabled={locating}
+            onClick={useNearMe}
+          >
+            <Navigation size={16} /> {locating ? "Finding you…" : "Near me"}
+          </Button>
+        </div>
         <div className="grid gap-5 md:grid-cols-2">
+          {area === "near" ? (
           <div>
             <div className="mb-2 flex justify-between text-xs">
               <span className="font-semibold text-slate-600">
@@ -1537,6 +1989,11 @@ function Matches({
               <span>25 km</span>
             </div>
           </div>
+          ) : (
+            <p className="self-center rounded-xl bg-green-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+              Showing every opportunity in {area}. Travel is estimated from {originName}.
+            </p>
+          )}
           <div>
             <span className="mb-2 block text-xs font-semibold text-slate-600">
               How you travel
@@ -1613,15 +2070,16 @@ function Matches({
       {mode === "map" && !store.dataSaver && !tileFailed ? (
         <div className="mb-5">
           <MatchMap
-            center={youth.location}
-            radius={radius}
+            center={area === "near" ? origin : PROVINCE_CENTRES[area]}
+            radius={area === "near" ? radius : 0}
+            zoom={area === "near" ? 11 : 9}
             pins={results.map((r) => ({
               id: r.p.id,
               name: r.p.title,
               point: r.p.location,
               affordable:
                 !r.result.travel.unaffordable && !r.result.travel.outOfRange,
-              outside: r.result.travel.directKm > radius,
+              outside: area === "near" && r.result.travel.directKm > radius,
             }))}
             onPick={(id) => setSelected(id)}
             onTileError={() => {
@@ -1646,8 +2104,12 @@ function Matches({
           ) : (
             <Empty
               icon={<Search size={26} />}
-              title="No matches in this radius"
-              text="Try a wider search radius. Opportunities further away are still shown below."
+              title={area === "near" ? "No matches in this radius" : `No opportunities in ${area} yet`}
+              text={
+                area === "near"
+                  ? "Try a wider search radius. Opportunities further away are still shown below."
+                  : "Try another province, or search near you."
+              }
             />
           )}
         </div>
@@ -1806,7 +2268,9 @@ function MyWeek({
   const [applicationId, setApplicationId] = useState(""),
     [days, setDays] = useState([0, 0, 0, 0, 0, 0, 0]),
     [work, setWork] = useState(""),
-    [skills, setSkills] = useState<string[]>([])
+    [skills, setSkills] = useState<string[]>([]),
+    [weekStart, setWeekStart] = useState(mondayOf(new Date())),
+    [weekError, setWeekError] = useState("")
   const chosen =
     engagements.find((a) => a.id === applicationId) || engagements[0]
   const placement =
@@ -1836,14 +2300,25 @@ function MyWeek({
               className="card space-y-5 p-5 md:p-6"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (!chosen || days.every((d) => d === 0) || !work.trim())
+                if (!chosen) return
+                const problem =
+                  canLogWeek({ role: "youth", youthId: youth.id }, chosen) ||
+                  validateWeek(
+                    { days, work, weekStart },
+                    store.weeks.filter((w) => w.applicationId === chosen.id),
+                  )
+                if (problem) {
+                  setWeekError(problem)
                   return
+                }
+                setWeekError("")
                 update((s) => {
                   s.weeks.unshift({
                     id: crypto.randomUUID(),
                     applicationId: chosen.id,
+                    weekStart,
                     days,
-                    work: work.trim(),
+                    work: work.trim().slice(0, LIMITS.workNotesMax),
                     skills,
                     status: "Submitted",
                     submittedAt: new Date().toISOString(),
@@ -1888,6 +2363,16 @@ function MyWeek({
                   </Select>
                 </Field>
               )}
+              <Field label="Week starting (Monday)" hint="You can log this week or earlier weeks, once each.">
+                <Input
+                  id="week-start"
+                  className="field"
+                  type="date"
+                  max={mondayOf(new Date())}
+                  value={weekStart}
+                  onChange={(e) => setWeekStart(e.target.value)}
+                />
+              </Field>
               <div>
                 <span className="label">Hours each day</span>
                 <div className="grid grid-cols-4 gap-2 sm:grid-cols-7">
@@ -1902,7 +2387,7 @@ function MyWeek({
                           className="field mt-1 !px-2 text-center"
                           type="number"
                           min="0"
-                          max="24"
+                          max={LIMITS.maxHoursPerDay}
                           step="0.5"
                           value={days[i]}
                           onChange={(e) =>
@@ -1919,11 +2404,32 @@ function MyWeek({
                 </div>
                 <p className="mt-2 text-xs text-stone-500">
                   Total: {days.reduce((a, b) => a + b, 0)} hours
+                  {(() => {
+                    const c = checkWorkWeek(days)
+                    return c.total > 0 ? ` · ${c.ordinary} ordinary · ${c.overtime} overtime` : ""
+                  })()}
                 </p>
+                {(() => {
+                  const c = checkWorkWeek(days)
+                  return (
+                    <div className="mt-2 space-y-1">
+                      {c.errors.map((e) => (
+                        <p key={e} className="rounded-lg bg-orange-50 px-3 py-2 text-xs font-semibold text-red-700">{e}</p>
+                      ))}
+                      {c.warnings.map((w) => (
+                        <p key={w} className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">{w}</p>
+                      ))}
+                      <p className="text-xs text-stone-400">
+                        Legal limits (BCEA): 45 ordinary hours a week, overtime only by agreement (max 3 a day, 10 a week), at least one full day off.
+                      </p>
+                    </div>
+                  )
+                })()}
               </div>
               <Field label="What did you do?">
                 <Textarea
                   required
+                  maxLength={LIMITS.workNotesMax}
                   value={work}
                   onChange={(e) => setWork(e.target.value)}
                   className="field min-h-28"
@@ -1956,6 +2462,7 @@ function MyWeek({
                   ))}
                 </div>
               </div>
+              {weekError && <p className="text-sm text-red-700">{weekError}</p>}
               <Button type="submit" className="btn-primary w-full">
                 Submit week <ArrowRight size={16} />
               </Button>
@@ -2012,11 +2519,12 @@ function WeekCard({ week }: { week: Week }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs text-stone-500">
-            Submitted {prettyDate(week.submittedAt)}
+            {week.weekStart ? `Week of ${week.weekStart} · ` : ""}Submitted {prettyDate(week.submittedAt)}
           </p>
           <p className="mt-1 font-bold">
             {week.days.reduce((a, b) => a + b, 0)} hours worked
           </p>
+
         </div>
         <Pill
           tone={
@@ -2131,10 +2639,11 @@ function Profile({
                 update((s) => {
                   const y = s.youth.find((x) => x.id === youth.id)!
                   Object.assign(y, {
-                    bio,
+                    bio: bio.slice(0, LIMITS.bioMax),
                     grade,
                     suburb,
                     location: point,
+                    province: provinceOf({ location: point }),
                     transport,
                     skills,
                   })
@@ -2778,14 +3287,6 @@ function BusinessProfile({
         eyebrow="Business setup"
         title="Business profile"
         subtitle="The basics people need to know about your business. Verification tiers are set only by an admin."
-        right={
-          <Button
-            className="btn-secondary text-xs"
-            onClick={() => go("/business/onboarding/new")}
-          >
-            + Add another business
-          </Button>
-        }
       />
       <div className="max-w-2xl">
         <div className="card mb-5 flex items-center gap-3 p-5">
@@ -2802,10 +3303,11 @@ function BusinessProfile({
             update((s) => {
               const b = s.businesses.find((x) => x.id === business.id)!
               Object.assign(b, {
-                name,
-                sector,
+                name: name.trim().slice(0, LIMITS.nameMax),
+                sector: sector.trim().slice(0, LIMITS.nameMax),
                 suburb,
                 location,
+                province: provinceOf({ location }),
                 paye,
                 compliant,
               })
@@ -2918,6 +3420,7 @@ function NewBusiness({
               sector: sector.trim(),
               suburb,
               location,
+              province: provinceOf({ location }),
               tier: "Verification pending",
               paye,
               compliant,
@@ -3003,7 +3506,7 @@ function PostPlacement({
 }) {
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
-    [stipend, setStipend] = useState(4500),
+    [stipend, setStipend] = useState(5000),
     [hours, setHours] = useState(160),
     [duration, setDuration] = useState(3),
     [startDate, setStartDate] = useState(today()),
@@ -3038,18 +3541,24 @@ function PostPlacement({
             toast("Add at least one required skill.")
             return
           }
+          const problem = validatePlacement({ title, description, stipend, hours, duration })
+          if (problem) {
+            toast(problem)
+            return
+          }
           update((s) => {
             s.placements.unshift({
               id: crypto.randomUUID(),
               businessId: business.id,
-              title,
-              description,
+              title: title.trim(),
+              description: description.trim(),
               stipend,
               hours,
               duration,
               startDate,
               skills,
               location,
+              province: provinceOf({ location }),
             })
             s.audit.unshift(audit(business.name, `Posted ${title}`))
             return s
@@ -3124,11 +3633,12 @@ function PostPlacement({
                 onChange={(e) => setStipend(Number(e.target.value))}
               />
             </Field>
-            <Field label="Hours / month">
+            <Field label="Hours / month" hint={`Max ${MAX_CONTRACTED_HOURS_MONTH} (45 a week)`}>
               <Input
                 required
                 type="number"
                 min="1"
+                max={MAX_CONTRACTED_HOURS_MONTH}
                 className="field"
                 value={hours}
                 onChange={(e) => setHours(Number(e.target.value))}
@@ -3139,11 +3649,23 @@ function PostPlacement({
                 required
                 type="number"
                 min="1"
+                max="24"
                 className="field"
                 value={duration}
                 onChange={(e) => setDuration(Number(e.target.value))}
               />
             </Field>
+            <div className="col-span-2">
+              {placementLabourProblem(stipend, hours) ? (
+                <p className="rounded-lg bg-orange-50 px-3 py-2 text-xs font-semibold text-red-700">
+                  {placementLabourProblem(stipend, hours)}
+                </p>
+              ) : (
+                <p className="rounded-lg bg-green-50 px-3 py-2 text-xs font-semibold text-green-700">
+                  R{hourlyRate(stipend, hours).toFixed(2)} an hour · meets the national minimum wage (R{NATIONAL_MINIMUM_WAGE_HOURLY.toFixed(2)})
+                </p>
+              )}
+            </div>
             <Field label="Start date">
               <Input
                 required
@@ -3217,6 +3739,11 @@ function Applicants({
       !store.blocked.includes(a.youthId),
   )
   const decide = (a: Application, status: Application["status"]) => {
+    const problem = canDecideApplication({ role: "business", businessId: business.id }, a, store, status)
+    if (problem) {
+      toast(problem)
+      return
+    }
     update((s) => {
       s.applications.find((x) => x.id === a.id)!.status = status
       s.audit.unshift(
@@ -3388,7 +3915,7 @@ function ETIPage({
   const { total, gross, realCost } = summarizeETI(
     active.map((x) => ({ pay: x.p.stipend, eti: x.eti.amount })),
   )
-  const [pay, setPay] = useState(4000),
+  const [pay, setPay] = useState(5000),
     [hours, setHours] = useState(160),
     [dob, setDob] = useState("2004-03-15"),
     [months, setMonths] = useState(0),
@@ -3667,6 +4194,12 @@ function ETIPage({
               {r}
             </p>
           ))}
+          {hours > 0 && pay / hours < NATIONAL_MINIMUM_WAGE_HOURLY && (
+            <p className="mt-2 text-xs font-semibold text-amber-800">
+              R{(pay / hours).toFixed(2)} an hour is below the national minimum wage of R
+              {NATIONAL_MINIMUM_WAGE_HOURLY.toFixed(2)}. Pay must be lawful before any incentive is claimed.
+            </p>
+          )}
           <div className="mt-3">{estimateNote}</div>
         </div>
       </div>
@@ -3704,6 +4237,11 @@ function Ledger({
   const submitted = weeks.filter((w) => w.status === "Submitted"),
     complete = weeks.filter((w) => w.status !== "Submitted")
   const act = (w: Week, status: Week["status"]) => {
+    const problem = canSignOffWeek({ role: "business", businessId: business.id }, w, store)
+    if (problem) {
+      toast(problem)
+      return
+    }
     const supervisor =
       status === "Signed off"
         ? window.prompt("Supervisor name for this sign-off:")
@@ -3721,9 +4259,9 @@ function Ledger({
       const week = s.weeks.find((x) => x.id === w.id)!
       week.status = status
       if (status === "Signed off") {
-        week.supervisor = supervisor!.trim()
+        week.supervisor = supervisor!.trim().slice(0, LIMITS.nameMax)
         week.signedAt = new Date().toISOString()
-      } else week.query = query!.trim()
+      } else week.query = query!.trim().slice(0, 500)
       s.audit.unshift(
         audit(
           business.name,
@@ -3745,7 +4283,7 @@ function Ledger({
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <Heading3 className="heading font-extrabold">
-              {youth.name}{" "}
+              {youth.name.split(" ")[0]}{" "}
               <span className="font-normal text-stone-500">· {p.title}</span>
             </Heading3>
             <p className="mt-1 text-xs text-stone-500">

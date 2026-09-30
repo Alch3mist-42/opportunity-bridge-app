@@ -1,6 +1,7 @@
 import { ageOn } from "./sa-id"
 
-export const MIN_WAGE_HOURLY: number | null = null
+// National minimum wage from 1 March 2026 (see lib/labour.ts).
+export const MIN_WAGE_HOURLY: number | null = 30.23
 export type ETIInput = {
   dateOfBirth: string
   claimMonth: string

@@ -24,7 +24,7 @@ const ETI_CASES: { name: string; input: Partial<ETIInput>; expected: number }[] 
 
 export type Check = { name: string; detail: string; pass: boolean }
 
-export function runSelfCheck(): { checks: Check[]; allPass: boolean } {
+export function runRulesCheck(): Check[] {
   const checks: Check[] = ETI_CASES.map((c) => {
     const actual = calculateETI({ ...base, ...c.input }).amount
     return { name: c.name, detail: `expected R${c.expected}, got R${actual}`, pass: actual === c.expected }
@@ -39,5 +39,5 @@ export function runSelfCheck(): { checks: Check[]; allPass: boolean } {
     detail: `Hillbrow → Midrand by taxi: ${Math.round(far.share * 100)}% of R4,000`,
     pass: far.unaffordable,
   })
-  return { checks, allPass: checks.every((c) => c.pass) }
+  return checks
 }
