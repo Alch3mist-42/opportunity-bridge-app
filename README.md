@@ -49,7 +49,7 @@ Every endpoint checks its input, allows only the right HTTP method, and limits e
 
 ## Access control and anti-cheating
 - `lib/access.ts` decides which role may open each page; wrong-role and signed-out visits are redirected.
-- `lib/auth.ts`: passwords and the admin code are stored only as salted SHA-256 hashes; 5 wrong attempts lock a form for 5 minutes; admin sessions end after 30 minutes; forged or stale sessions are signed out.
+- `lib/auth.ts`: live password-strength meter (sign-up and changes need at least Fair; common words and your email name are refused); Forgot password uses a one-time recovery code shown once at sign-up and replaced after each use (demo accounts: DEMO-RESET-2026); passwords and the admin code are stored only as salted SHA-256 hashes; 5 wrong attempts lock a form for 5 minutes; admin sessions end after 30 minutes; forged or stale sessions are signed out.
 - `lib/rules.ts`: one application per placement; only the posting business can accept, decline or sign off; a young person can never sign off their own week; no future weeks, BCEA hour limits, one entry per week; signed-off weeks are locked; only admins change verification; report rate limits.
 - `lib/security-selfcheck.ts` tests these real functions live on the Admin page. There are 33 checks in total across tax and travel, fair work, and access.
 - Honest limit: this prototype runs in the browser, so a determined person could edit their own local data. In production these same rules run on a server with a database.

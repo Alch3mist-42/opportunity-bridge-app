@@ -1,7 +1,7 @@
 // Single source of truth for who may open which page.
 export type Role = "youth" | "business" | "admin"
 
-const PUBLIC = ["/", "/signin", "/signup/youth", "/signup/business", "/admin-access", "/privacy"]
+const PUBLIC = ["/", "/signin", "/signup/youth", "/signup/business", "/admin-access", "/privacy", "/forgot"]
 const YOUTH = ["/matches", "/applications", "/week", "/profile", "/record", "/opportunities", "/setup/youth"]
 
 export function isPublic(path: string): boolean {

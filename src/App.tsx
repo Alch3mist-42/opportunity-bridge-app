@@ -33,6 +33,8 @@ import {
   Wallet,
   X,
   LogOut,
+  KeyRound,
+  Copy,
 } from "lucide-react"
 import { jsPDF } from "jspdf"
 import MatchMap from "./MatchMap"
@@ -63,6 +65,7 @@ import {
   loadSession,
   saveSession,
   DEMO_PASSWORD,
+  DEMO_RECOVERY_CODE,
 } from "./data"
 import { canAccess, homeFor, isPublic, ownerLabel, type Role } from "../lib/access"
 import {
@@ -75,6 +78,10 @@ import {
   newSalt,
   passwordProblem,
   recordFailure,
+  passwordStrength,
+  newPasswordProblem,
+  newRecoveryCode,
+  hashRecoveryCode,
 } from "../lib/auth"
 import {
   canApply,
@@ -564,7 +571,7 @@ export default function App() {
   }
 
   // Page guard: every route is checked by lib/access.ts.
-  const signedInOnlyPublic = ["/signin", "/signup/youth", "/signup/business", "/admin-access"]
+  const signedInOnlyPublic = ["/signin", "/signup/youth", "/signup/business", "/admin-access", "/forgot"]
   let redirect: { to: string; message?: string } | null = null
   if (path === "/demo") redirect = { to: "/" }
   else if (path === "/" && role && !needsSetup) redirect = { to: homeFor(role) }
@@ -680,7 +687,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-stone-100 text-emerald-950">
-      <header className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 backdrop-blur-lg">
+      <header className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur-lg">
         <div className="mx-auto flex h-18 max-w-7xl items-center justify-between gap-3 px-4 md:px-8">
           <Button
             onClick={() => go(role && !needsSetup ? homeFor(role) : "/")}
@@ -732,7 +739,7 @@ export default function App() {
           </div>
         </div>
       </header>
-      <div className="mx-auto flex max-w-7xl gap-8 px-4 pb-28 pt-6 md:px-8 md:pb-12 md:pt-9">
+      <div className="mx-auto flex max-w-7xl gap-8 px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-6 md:px-8 md:pb-12 md:pt-9">
         {inWorkspace && (
           <aside className="sticky top-28 hidden h-fit w-56 shrink-0 lg:block">
             <p className="eyebrow mb-4 px-3">
@@ -801,6 +808,8 @@ export default function App() {
             <Landing go={go} role={needsSetup ? null : role} />
           ) : path === "/signin" ? (
             <SignIn store={store} signIn={signIn} go={go} />
+          ) : path === "/forgot" ? (
+            <ForgotPassword store={store} update={update} go={go} toast={setToast} />
           ) : path === "/signup/youth" || path === "/signup/business" ? (
             <CreateAccount
               role={path === "/signup/youth" ? "youth" : "business"}
@@ -978,6 +987,11 @@ export default function App() {
               <Button onClick={signOut} className="btn-secondary text-sm">
                 <LogOut size={16} /> Sign out
               </Button>
+              {account && (
+                <div className="w-full border-t border-stone-200 pt-4">
+                  <ChangePassword account={account} update={update} toast={setToast} />
+                </div>
+              )}
             </div>
           )}
         </main>
@@ -985,7 +999,7 @@ export default function App() {
       {toast && (
         <div
           role="status"
-          className="fixed bottom-24 left-1/2 z-50 w-max max-w-[90vw] -translate-x-1/2 rounded-xl bg-emerald-900 px-5 py-3 text-center text-sm font-semibold text-white shadow-xl md:bottom-6"
+          className="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 z-50 w-max max-w-[90vw] -translate-x-1/2 rounded-xl bg-emerald-900 px-5 py-3 text-center text-sm font-semibold text-white shadow-xl md:bottom-6"
         >
           {toast}
         </div>
@@ -993,7 +1007,7 @@ export default function App() {
       {inWorkspace && (
         <nav
           aria-label="Main navigation"
-          className="fixed bottom-0 left-0 right-0 z-40 flex h-18 items-center justify-around border-t border-stone-200 bg-white/95 px-1 pb-1 backdrop-blur-lg lg:hidden"
+          className="fixed inset-x-0 bottom-0 z-40 flex min-h-18 items-center justify-around border-t border-stone-200 bg-white px-1 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_#1722380A] lg:hidden"
         >
           {tabs.map((t) => (
             <Button
@@ -1188,6 +1202,9 @@ function SignIn({
         <Button type="submit" className="btn-primary w-full" disabled={busy || locked > 0}>
           Sign in <ArrowRight size={16} />
         </Button>
+        <Button className="text-sm font-bold text-iris underline" onClick={() => go("/forgot")}>
+          Forgot password?
+        </Button>
         <p className="text-sm text-stone-500">
           New here?{" "}
           <Button className="font-bold text-emerald-800 underline" onClick={() => go("/signup/youth")}>Join as a young person</Button>{" "}
@@ -1200,7 +1217,7 @@ function SignIn({
         <p className="eyebrow">Demo accounts (fictional)</p>
         <p className="text-xs text-stone-500">
           For judges and testing. Each signs in with the same password check as any account
-          (password: {DEMO_PASSWORD}).
+          (password: {DEMO_PASSWORD}; recovery code for Forgot password: {DEMO_RECOVERY_CODE}).
         </p>
         {demos.map((a) => (
           <Button
@@ -1234,7 +1251,14 @@ function CreateAccount({
     [password, setPassword] = useState(""),
     [confirm, setConfirm] = useState(""),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false)
+    [busy, setBusy] = useState(false),
+    [created, setCreated] = useState<{ acc: Account; code: string } | null>(null)
+  if (created)
+    return (
+      <div className="mx-auto max-w-xl">
+        <RecoveryCodeCard code={created.code} onDone={() => onCreated(created.acc)} />
+      </div>
+    )
   return (
     <div className="mx-auto max-w-xl">
       <Button onClick={() => go("/")} className="mb-6 flex items-center gap-2 text-sm font-bold text-green-700">
@@ -1256,7 +1280,7 @@ function CreateAccount({
           const mail = email.trim().toLowerCase()
           const problem =
             emailProblem(mail) ||
-            passwordProblem(password) ||
+            newPasswordProblem(password, mail) ||
             (password !== confirm ? "The passwords don't match." : null) ||
             (store.accounts.some((a) => a.email === mail) ? "An account with this email already exists. Sign in instead." : null)
           if (problem) {
@@ -1265,7 +1289,15 @@ function CreateAccount({
           }
           setBusy(true)
           const salt = newSalt()
-          const acc: Account = { id: crypto.randomUUID(), email: mail, role, salt, hash: await hashPassword(password, salt) }
+          const code = newRecoveryCode()
+          const acc: Account = {
+            id: crypto.randomUUID(),
+            email: mail,
+            role,
+            salt,
+            hash: await hashPassword(password, salt),
+            recoveryHash: await hashRecoveryCode(code, salt),
+          }
           setBusy(false)
           update((s) => {
             s.accounts.push(acc)
@@ -1274,14 +1306,15 @@ function CreateAccount({
           })
           setPassword("")
           setConfirm("")
-          onCreated(acc)
+          setCreated({ acc, code })
         }}
       >
         <Field label="Email">
           <Input id="signup-email" className="field" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Password" hint="At least 8 characters, with a letter and a number.">
+        <Field label="Password" hint="At least 8 characters with a letter and a number. Aim for Good or Strong.">
           <Input id="signup-password" className="field" type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          <StrengthMeter password={password} email={email} />
         </Field>
         <Field label="Confirm password">
           <Input id="signup-confirm" className="field" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
@@ -1293,6 +1326,250 @@ function CreateAccount({
         <p className="text-xs text-stone-400">{PROTOTYPE_NOTE}</p>
       </form>
     </div>
+  )
+}
+
+function StrengthMeter({ password, email = "" }: { password: string; email?: string }) {
+  if (!password) return null
+  const st = passwordStrength(password, email)
+  const colours = ["bg-coral", "bg-coral", "bg-champagne", "bg-iris", "bg-ink"]
+  return (
+    <div className="mt-2" aria-live="polite">
+      <div className="flex gap-1">
+        {[1, 2, 3, 4].map((i) => (
+          <span key={i} className={`h-1.5 flex-1 rounded-full ${i <= st.score ? colours[st.score] : "bg-stone-200"}`} />
+        ))}
+      </div>
+      <p className={`mt-1 text-xs font-semibold ${st.score < 2 ? "text-red-700" : "text-stone-600"}`}>
+        Password strength: {st.label}
+        {st.tips.length > 0 && <span className="font-normal text-stone-500"> · {st.tips.join(" ")}</span>}
+      </p>
+    </div>
+  )
+}
+
+function RecoveryCodeCard({ code, onDone }: { code: string; onDone: () => void }) {
+  const [saved, setSaved] = useState(false)
+  return (
+    <div className="card space-y-4 p-6">
+      <p className="eyebrow">Save this now</p>
+      <Heading2 className="heading text-2xl font-extrabold">Your recovery code</Heading2>
+      <p className="text-sm text-stone-600">
+        If you forget your password, this code lets you set a new one. We only keep a scrambled copy, so we
+        can't show it to you again. Screenshot it or write it down somewhere safe.
+      </p>
+      <div className="rounded-2xl bg-green-50 p-5 text-center font-mono text-2xl font-extrabold tracking-widest text-emerald-700">
+        {code}
+      </div>
+      <Button
+        className="btn-secondary w-full"
+        onClick={() => {
+          navigator.clipboard?.writeText(code).catch(() => {})
+          setSaved(true)
+        }}
+      >
+        <Copy size={16} /> Copy code
+      </Button>
+      <label className="flex items-center gap-3 text-sm font-semibold">
+        <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} /> I've saved my recovery code
+      </label>
+      <Button className="btn-primary w-full" disabled={!saved} onClick={onDone}>
+        Continue <ArrowRight size={16} />
+      </Button>
+    </div>
+  )
+}
+
+function ForgotPassword({
+  store,
+  update,
+  go,
+  toast,
+}: {
+  store: Store
+  update: (fn: (s: Store) => Store) => void
+  go: (p: string) => void
+  toast: (s: string) => void
+}) {
+  const [email, setEmail] = useState(""),
+    [code, setCode] = useState(""),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [locked, setLocked] = useState(lockRemaining("reset")),
+    [newCode, setNewCode] = useState("")
+  if (newCode)
+    return (
+      <div className="mx-auto max-w-xl">
+        <RecoveryCodeCard
+          code={newCode}
+          onDone={() => {
+            toast("Password changed. Sign in with your new password.")
+            go("/signin")
+          }}
+        />
+      </div>
+    )
+  return (
+    <div className="mx-auto max-w-xl">
+      <Button onClick={() => go("/signin")} className="mb-6 flex items-center gap-2 text-sm font-bold text-green-700">
+        <ArrowLeft size={17} /> Back to sign in
+      </Button>
+      <PageIntro
+        eyebrow="Account help"
+        title="Forgot your password?"
+        subtitle="Use the recovery code you saved when you created your account. Then you'll get a new code."
+      />
+      <form
+        className="card space-y-5 p-6"
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const left = lockRemaining("reset")
+          if (left) {
+            setLocked(left)
+            return
+          }
+          const mail = email.trim().toLowerCase()
+          const problem =
+            newPasswordProblem(password, mail) || (password !== confirm ? "The passwords don't match." : null)
+          if (problem) {
+            setError(problem)
+            return
+          }
+          setBusy(true)
+          const acc = store.accounts.find((a) => a.email === mail)
+          const ok = !!acc?.recoveryHash && (await hashRecoveryCode(code, acc.salt)) === acc.recoveryHash
+          if (!ok || !acc) {
+            setBusy(false)
+            setLocked(recordFailure("reset"))
+            setError("That email and recovery code don't match.")
+            return
+          }
+          clearFailures("reset")
+          const salt = newSalt()
+          const fresh = newRecoveryCode()
+          const hash = await hashPassword(password, salt)
+          const recoveryHash = await hashRecoveryCode(fresh, salt)
+          setBusy(false)
+          update((s) => {
+            const a = s.accounts.find((x) => x.id === acc.id)!
+            Object.assign(a, { salt, hash, recoveryHash })
+            s.audit.unshift(audit(mail, "Reset password with a recovery code"))
+            return s
+          })
+          setCode("")
+          setPassword("")
+          setConfirm("")
+          setNewCode(fresh)
+        }}
+      >
+        {locked > 0 && <LockedNote ms={locked} />}
+        <Field label="Email">
+          <Input className="field" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Field label="Recovery code" hint="12 letters and numbers, like ABCD-EFGH-JKLM.">
+          <Input className="field font-mono uppercase" autoComplete="off" required value={code} onChange={(e) => setCode(e.target.value.slice(0, 20))} />
+        </Field>
+        <Field label="New password">
+          <Input className="field" type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          <StrengthMeter password={password} email={email} />
+        </Field>
+        <Field label="Confirm new password">
+          <Input className="field" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red-700">{error}</p>}
+        <Button type="submit" className="btn-primary w-full" disabled={busy || locked > 0}>
+          Set new password <ArrowRight size={16} />
+        </Button>
+        <p className="text-xs text-stone-400">
+          Lost your recovery code too? In production we'd also send a reset link by email or SMS. This prototype has
+          no mail server, so recovery codes keep it secure without one.
+        </p>
+      </form>
+    </div>
+  )
+}
+
+function ChangePassword({
+  account,
+  update,
+  toast,
+}: {
+  account: Account
+  update: (fn: (s: Store) => Store) => void
+  toast: (s: string) => void
+}) {
+  const [open, setOpen] = useState(false),
+    [current, setCurrent] = useState(""),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [newCode, setNewCode] = useState("")
+  if (newCode) return <RecoveryCodeCard code={newCode} onDone={() => { setNewCode(""); setOpen(false) }} />
+  if (!open)
+    return (
+      <div className="flex flex-wrap gap-2">
+        <Button className="btn-secondary text-sm" onClick={() => setOpen(true)}>
+          <KeyRound size={16} /> Strengthen or change password
+        </Button>
+      </div>
+    )
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        const left = lockRemaining("change")
+        if (left) return setError("Too many wrong tries. Wait a few minutes.")
+        const problem =
+          newPasswordProblem(password, account.email) ||
+          (password !== confirm ? "The new passwords don't match." : null) ||
+          (password === current ? "Choose a different password from your current one." : null)
+        if (problem) return setError(problem)
+        setBusy(true)
+        if ((await hashPassword(current, account.salt)) !== account.hash) {
+          setBusy(false)
+          recordFailure("change")
+          return setError("Your current password isn't right.")
+        }
+        clearFailures("change")
+        const salt = newSalt()
+        const fresh = newRecoveryCode()
+        const hash = await hashPassword(password, salt)
+        const recoveryHash = await hashRecoveryCode(fresh, salt)
+        setBusy(false)
+        update((s) => {
+          const a = s.accounts.find((x) => x.id === account.id)!
+          Object.assign(a, { salt, hash, recoveryHash })
+          s.audit.unshift(audit(account.email, "Changed password"))
+          return s
+        })
+        setCurrent("")
+        setPassword("")
+        setConfirm("")
+        setError("")
+        toast("Password changed. Save your new recovery code.")
+        setNewCode(fresh)
+      }}
+    >
+      <Field label="Current password">
+        <Input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+      </Field>
+      <Field label="New password">
+        <Input className="field" type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        <StrengthMeter password={password} email={account.email} />
+      </Field>
+      <Field label="Confirm new password">
+        <Input className="field" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+      </Field>
+      {error && <p className="text-sm text-red-700">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="btn-primary text-sm" disabled={busy}>Save new password</Button>
+        <Button className="btn-secondary text-sm" onClick={() => { setOpen(false); setError("") }}>Cancel</Button>
+      </div>
+    </form>
   )
 }
 

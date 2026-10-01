@@ -61,3 +61,47 @@ export function recordFailure(form: string, now = Date.now()): number {
   return next.lockedUntil ? LOCK_MS : 0
 }
 export function clearFailures(form: string) { writeLock(form, { failures: [] }) }
+
+// ---- Password strength (shown live while typing) ----
+const COMMON = ["password", "123456", "12345678", "qwerty", "abc123", "letmein", "welcome", "iloveyou", "admin", "monkey", "dragon", "football", "sunshine", "princess", "password1", "11111111", "00000000", "mzansi", "southafrica", "soweto", "jozi"]
+
+export type Strength = { score: 0 | 1 | 2 | 3 | 4; label: string; tips: string[] }
+export function passwordStrength(password: string, email = ""): Strength {
+  const tips: string[] = []
+  let score = 0
+  if (password.length >= 8) score++
+  else tips.push("Use at least 8 characters.")
+  if (password.length >= 12) score++
+  else tips.push("12 or more characters is much stronger.")
+  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++
+  else tips.push("Mix capital and small letters.")
+  if (/\d/.test(password) && /[^A-Za-z0-9]/.test(password)) score++
+  else tips.push(/\d/.test(password) ? "Add a symbol like ! or #." : "Add a number and a symbol.")
+  const lower = password.toLowerCase()
+  const name = email.split("@")[0]?.toLowerCase() || ""
+  if (COMMON.some((c) => lower.includes(c)) || (name.length >= 3 && lower.includes(name))) {
+    score = Math.min(score, 1)
+    tips.unshift("Avoid common words and your email name.")
+  }
+  if (/(.)\1\1/.test(password)) {
+    score = Math.min(score, 2)
+    tips.push("Avoid repeating the same character.")
+  }
+  const s = Math.min(score, 4) as Strength["score"]
+  return { score: s, label: ["Too weak", "Weak", "Fair", "Good", "Strong"][s], tips: tips.slice(0, 2) }
+}
+/** Sign-up and password changes need at least "Fair". */
+export function newPasswordProblem(password: string, email = ""): string | null {
+  return passwordProblem(password) || (passwordStrength(password, email).score < 2 ? "Make your password stronger (see the tips)." : null)
+}
+
+// ---- Recovery codes for "Forgot password" (no email server in this prototype) ----
+const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+export function newRecoveryCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(12))
+  const chars = Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("")
+  return `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`
+}
+export function hashRecoveryCode(code: string, salt: string): Promise<string> {
+  return sha256(`${salt}:recovery:${code.toUpperCase().replace(/[^A-Z0-9]/g, "")}`)
+}

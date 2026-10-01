@@ -74,6 +74,7 @@ export type Account = {
   hash: string
   profileId?: string // youth id or business id, set once setup is complete
   demo?: boolean
+  recoveryHash?: string // hash of the one-time recovery code used by "Forgot password"
 }
 export type Audit = { id: string; actor: string; action: string; at: string }
 export type Store = {
@@ -350,11 +351,12 @@ export function seedStore(): Store {
 }
 // Fictional demo logins (password Demo1234!). Only salted SHA-256 hashes are stored.
 export const DEMO_PASSWORD = "Demo1234!"
+export const DEMO_RECOVERY_CODE = "DEMO-RESET-2026"
 const demoAccounts: Account[] = [
-  { id: "acc-thandi", email: "thandi@demo.ob", role: "youth", salt: "demo-salt-thandi", hash: "7604baf9a9ec553dacd9599f4ce84d9b7153072d9aeb9a2825701cc6e476ca0c", profileId: "thandi", demo: true },
-  { id: "acc-sipho", email: "sipho@demo.ob", role: "youth", salt: "demo-salt-sipho", hash: "0b248500e674a642cbe31d120e153c1ef99390198a93ac9b215ad1ead804cdc7", profileId: "sipho", demo: true },
-  { id: "acc-joy", email: "joy@demo.ob", role: "business", salt: "demo-salt-joy", hash: "1bdbf0aed7e92b37abf0272c44999572a5e3754d0ba4ebfa62db97d9f83b2ff2", profileId: "DEMO-0001", demo: true },
-  { id: "acc-kasi", email: "kasifix@demo.ob", role: "business", salt: "demo-salt-kasi", hash: "aa1f1df8f37c5a93edc65abcf6e41cb6e2ed5c99a6d978bc8b4138e357b043fa", profileId: "DEMO-0002", demo: true },
+  { id: "acc-thandi", email: "thandi@demo.ob", role: "youth", salt: "demo-salt-thandi", hash: "7604baf9a9ec553dacd9599f4ce84d9b7153072d9aeb9a2825701cc6e476ca0c", profileId: "thandi", demo: true, recoveryHash: "be46cd215d388dead0a8d0412af2b866770b835f5cf88a90370d24800d95568e" },
+  { id: "acc-sipho", email: "sipho@demo.ob", role: "youth", salt: "demo-salt-sipho", hash: "0b248500e674a642cbe31d120e153c1ef99390198a93ac9b215ad1ead804cdc7", profileId: "sipho", demo: true, recoveryHash: "c1ceace4ffe0c8c37ff06e050678f493e2dc90295d00a78479727afde57525e0" },
+  { id: "acc-joy", email: "joy@demo.ob", role: "business", salt: "demo-salt-joy", hash: "1bdbf0aed7e92b37abf0272c44999572a5e3754d0ba4ebfa62db97d9f83b2ff2", profileId: "DEMO-0001", demo: true, recoveryHash: "f6816784506801bdace004cebf1042d991b3774dbea408b1af9cdb2fa84f772a" },
+  { id: "acc-kasi", email: "kasifix@demo.ob", role: "business", salt: "demo-salt-kasi", hash: "aa1f1df8f37c5a93edc65abcf6e41cb6e2ed5c99a6d978bc8b4138e357b043fa", profileId: "DEMO-0002", demo: true, recoveryHash: "70cc07e1b3eb0d0b6547da23966ace7c50ec25cee83aa45a1107968a327feb36" },
 ]
 
 const KEY = "opportunity-bridge-demo-v2"
@@ -365,6 +367,11 @@ export function loadStore(): Store {
       const stored = JSON.parse(raw) as Store
       // Older saved demos have no accounts yet: add the demo logins.
       if (!Array.isArray(stored.accounts)) stored.accounts = structuredClone(demoAccounts)
+      // Demo logins saved before "Forgot password" existed get their recovery code.
+      for (const a of stored.accounts) {
+        const seed = demoAccounts.find((d) => d.id === a.id)
+        if (seed && !a.recoveryHash && a.hash === seed.hash) a.recoveryHash = seed.recoveryHash
+      }
       return stored
     }
   } catch {
