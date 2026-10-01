@@ -132,6 +132,11 @@ import {
 
 // Hash-based routes (#/matches) so the app works on any static host.
 const currentRoute = () => window.location.hash.slice(1) || "/"
+// The page content scrolls inside #app-scroll (between the header and the bottom bar), not the window.
+const scrollTop = () => {
+  document.getElementById("app-scroll")?.scrollTo(0, 0)
+  window.scrollTo(0, 0)
+}
 
 // Keeps a page's filters (area, radius, view) through a refresh, for this browser tab only.
 function useTabState<T>(key: string, initial: T | (() => T)) {
@@ -561,13 +566,13 @@ export default function App() {
   const go = (url: string) => {
     if (url !== currentRoute()) history.pushState({ ob: "page" }, "", `#${url}`)
     setPath(url)
-    window.scrollTo(0, 0)
+    scrollTop()
   }
   // Used for redirects, sign-in and sign-out so back never lands on a page you were bounced from.
   const replace = (url: string) => {
     history.replaceState({ ob: history.state?.ob === "guard" ? "guard" : "page" }, "", `#${url}`)
     setPath(url)
-    window.scrollTo(0, 0)
+    scrollTop()
   }
 
   // Page guard: every route is checked by lib/access.ts.
@@ -686,8 +691,8 @@ export default function App() {
           .toUpperCase()
 
   return (
-    <div className="min-h-screen bg-stone-100 text-emerald-950">
-      <header className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur-lg">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-stone-100 text-emerald-950">
+      <header className="z-40 shrink-0 border-b border-stone-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur-lg">
         <div className="mx-auto flex h-18 max-w-7xl items-center justify-between gap-3 px-4 md:px-8">
           <Button
             onClick={() => go(role && !needsSetup ? homeFor(role) : "/")}
@@ -739,9 +744,10 @@ export default function App() {
           </div>
         </div>
       </header>
-      <div className="mx-auto flex max-w-7xl gap-8 px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-6 md:px-8 md:pb-12 md:pt-9">
+      <div id="app-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+      <div className="mx-auto flex max-w-7xl gap-8 px-4 pb-10 pt-6 md:px-8 md:pb-12 md:pt-9">
         {inWorkspace && (
-          <aside className="sticky top-28 hidden h-fit w-56 shrink-0 lg:block">
+          <aside className="sticky top-6 hidden h-fit w-56 shrink-0 lg:block">
             <p className="eyebrow mb-4 px-3">
               {role === "youth"
                 ? "Your workspace"
@@ -996,6 +1002,7 @@ export default function App() {
           )}
         </main>
       </div>
+      </div>
       {toast && (
         <div
           role="status"
@@ -1007,7 +1014,7 @@ export default function App() {
       {inWorkspace && (
         <nav
           aria-label="Main navigation"
-          className="fixed inset-x-0 bottom-0 z-40 flex min-h-18 items-center justify-around border-t border-stone-200 bg-white px-1 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_#1722380A] lg:hidden"
+          className="z-40 flex min-h-18 shrink-0 items-center justify-around border-t border-stone-200 bg-white px-1 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-[0_-4px_16px_#1722380A] lg:hidden"
         >
           {tabs.map((t) => (
             <Button
