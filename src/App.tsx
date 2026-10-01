@@ -686,13 +686,13 @@ export default function App() {
             onClick={() => go(role && !needsSetup ? homeFor(role) : "/")}
             className="flex items-center gap-2.5 text-left"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-800 text-white">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink text-champagne">
               <BriefcaseBusiness size={21} strokeWidth={2.2} />
             </span>
             <span className="heading text-lg font-extrabold leading-[1.05] tracking-tight">
               opportunity
               <br />
-              <span className="text-green-700">bridge.</span>
+              <span className="text-iris">bridge.</span>
             </span>
           </Button>
           <div className="flex shrink-0 items-center gap-2">
@@ -749,7 +749,7 @@ export default function App() {
                   onClick={() => go(t.url)}
                   className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold ${
                     path === t.url
-                      ? "bg-green-100 text-emerald-800"
+                      ? "bg-green-100 text-emerald-700"
                       : "text-stone-500 hover:bg-white"
                   }`}
                 >
@@ -1000,7 +1000,7 @@ export default function App() {
               key={t.url}
               onClick={() => go(t.url)}
               className={`flex min-w-0 flex-1 flex-col items-center gap-1 py-2 text-xs font-bold ${
-                path === t.url ? "text-emerald-800" : "text-stone-400"
+                path === t.url ? "text-iris" : "text-stone-400"
               }`}
             >
               <t.icon size={21} strokeWidth={path === t.url ? 2.5 : 2} />
@@ -1025,22 +1025,29 @@ function Landing({ go, role }: { go: (p: string) => void; role: Role | null }) {
           <Heading1 className="heading max-w-xl text-4xl font-extrabold leading-[1.13] md:text-5xl">
             A chance to work.
             <br />
-            <span className="text-emerald-200">A way forward.</span>
+            <span className="serif-accent text-[1.12em] text-champagne">A way forward.</span>
           </Heading1>
           <p className="mt-5 max-w-lg text-sm leading-7 text-slate-300">
             Real work experience for young South Africans, matched by skills and by
             what it costs to get there. A simpler, lower-risk way for local
             businesses to open the door.
           </p>
-          {role && (
-            <Button className="btn-secondary mt-6" onClick={() => go(homeFor(role))}>
+          {role ? (
+            <Button className="btn-champagne mt-7" onClick={() => go(homeFor(role))}>
               Go to my workspace <ArrowRight size={16} />
+            </Button>
+          ) : (
+            <Button
+              className="btn-champagne mt-7"
+              onClick={() => document.getElementById("choose-role")?.scrollIntoView({ behavior: "smooth" })}
+            >
+              Find your opportunity <ArrowRight size={16} />
             </Button>
           )}
         </div>
       </div>
       {!role && (
-        <div className="mt-8">
+        <div className="mt-8 scroll-mt-24" id="choose-role">
           <p className="eyebrow mb-3">Get started</p>
           <Heading2 className="heading mb-5 text-2xl font-extrabold">
             Who are you joining as?
@@ -3238,7 +3245,7 @@ function Dashboard({
           </p>
           <Button
             onClick={() => go("/business/post")}
-            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-green-200 px-4 py-3 text-sm font-extrabold text-emerald-900"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-champagne px-4 py-3 text-sm font-extrabold text-ink hover:bg-champagne-hover"
           >
             Post a placement <ArrowRight size={16} />
           </Button>

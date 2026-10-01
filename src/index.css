@@ -1,5 +1,63 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap');
 @import 'tailwindcss';
+
+/* Opportunity Bridge palette: Midnight Ink, Royal Iris, Soft Lilac, Champagne, Porcelain, Burnt Coral.
+   The app's colour classes are re-pointed here so every screen follows the palette (no green). */
+@theme {
+  --color-ink: #172238;
+  --color-iris: #6055C8;
+  --color-lilac: #DCD7F5;
+  --color-champagne: #D3B98D;
+  --color-champagne-hover: #E5CFA8;
+  --color-porcelain: #F7F5F1;
+  --color-coral: #C76F68;
+
+  /* "emerald" = ink family */
+  --color-emerald-50: #EEEAF8;
+  --color-emerald-100: #DCD7F5;
+  --color-emerald-200: #E2DEF9;
+  --color-emerald-300: #B9B1EA;
+  --color-emerald-700: #342D72;
+  --color-emerald-800: #172238;
+  --color-emerald-900: #172238;
+  --color-emerald-950: #172238;
+
+  /* "green" = Royal Iris and its lilac tints */
+  --color-green-50: #EEEBFC;
+  --color-green-100: #E9E6FA;
+  --color-green-200: #E2DEF9;
+  --color-green-300: #C9C2EE;
+  --color-green-600: #5146B5;
+  --color-green-700: #6055C8;
+  --color-green-800: #4C43A4;
+
+  /* warm neutrals: porcelain canvas, subtle borders, blue-grey secondary text */
+  --color-stone-50: #FBFAF8;
+  --color-stone-100: #F7F5F1;
+  --color-stone-200: #EAE7E2;
+  --color-stone-300: #DEDBD5;
+  --color-stone-400: #9A9EAA;
+  --color-stone-500: #6D7280;
+  --color-stone-600: #5A5F6C;
+  --color-stone-700: #3B4252;
+  --color-slate-200: #DCD7F5;
+  --color-slate-300: #C4C8D0;
+  --color-slate-400: #9A9EAA;
+  --color-slate-500: #777D89;
+  --color-slate-600: #5A5F6C;
+
+  /* Burnt Coral for warnings and anything needing attention */
+  --color-red-50: #F9EDEB;
+  --color-red-100: #F3DAD7;
+  --color-red-600: #B5605A;
+  --color-red-700: #A2514A;
+  --color-red-800: #87423C;
+  --color-orange-50: #F9EDEB;
+  --color-orange-100: #F3DAD7;
+  --color-amber-50: #F9EDEB;
+  --color-amber-700: #C76F68;
+  --color-amber-800: #A2514A;
+}
 
 :root { font-family: 'DM Sans', sans-serif; color: var(--color-emerald-950); background: var(--color-stone-100); }
 body { margin: 0; min-width: 320px; }
@@ -7,12 +65,15 @@ button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .heading { font-family: 'Manrope', sans-serif; letter-spacing: -.045em; }
-@layer components { .card { background: var(--color-white); border: 1px solid var(--color-stone-200); border-radius: 22px; box-shadow: 0 4px 22px color-mix(in srgb, var(--color-emerald-950) 4%, transparent); } }
+@layer components { .card { background: var(--color-white); border: 1px solid var(--color-stone-200); border-radius: 22px; box-shadow: 0 4px 22px #1722380A; } }
 .field { width: 100%; background: var(--color-white); border: 1px solid var(--color-stone-200); border-radius: 12px; padding: 12px 14px; outline: none; color: var(--color-emerald-950); min-height: 48px; }
 .field:focus { border-color: var(--color-green-700); box-shadow: 0 0 0 3px var(--color-green-100); }
-.btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--color-emerald-800); color: var(--color-white); border-radius: 12px; padding: 12px 19px; min-height: 45px; font-weight: 700; transition: background .15s; }
-.btn-primary:hover { background: var(--color-emerald-900); }
-.btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--color-white); color: var(--color-emerald-800); border: 1px solid var(--color-stone-300); border-radius: 12px; padding: 11px 18px; min-height: 45px; font-weight: 700; }
+.btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--color-iris); color: var(--color-white); border-radius: 12px; padding: 12px 19px; min-height: 45px; font-weight: 700; transition: background .15s; }
+.btn-primary:hover { background: #5146B5; }
+.btn-champagne { display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: var(--color-champagne); color: var(--color-ink); border-radius: 8px; padding: 13px 22px; min-height: 48px; font-weight: 700; transition: background .15s; }
+.btn-champagne:hover { background: var(--color-champagne-hover); }
+.serif-accent { font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-weight: 400; letter-spacing: -.01em; }
+.btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--color-white); color: var(--color-ink); border: 1px solid var(--color-stone-300); border-radius: 12px; padding: 11px 18px; min-height: 45px; font-weight: 700; }
 .btn-secondary:hover { background: var(--color-green-50); }
 .chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 100px; padding: 7px 12px; font-size: 12px; font-weight: 700; background: var(--color-stone-100); color: var(--color-slate-600); }
 .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; font-weight: 800; color: var(--color-green-700); }
