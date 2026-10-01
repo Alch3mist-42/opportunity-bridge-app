@@ -23,6 +23,7 @@ export type Business = {
   paye: boolean
   compliant: boolean
   province?: string
+  photo?: string // small JPEG data URL the business uploaded
 }
 export type Placement = {
   id: string

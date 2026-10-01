@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { CheckCircle2, XCircle } from "lucide-react"
 import { runRulesCheck, type Check } from "../lib/eti-selfcheck"
 import { runFairWorkCheck, runSecurityCheck } from "../lib/security-selfcheck"
+import { api, type ServerSelfCheck } from "../lib/api"
 
 function Group({ title, checks }: { title: string; checks: Check[] }) {
   return (
@@ -28,6 +29,10 @@ export default function SelfCheck() {
   const rules = useMemo(runRulesCheck, [])
   const fairWork = useMemo(runFairWorkCheck, [])
   const [security, setSecurity] = useState<Check[] | null>(null)
+  const [server, setServer] = useState<ServerSelfCheck | null | "offline">(null)
+  useEffect(() => {
+    api<ServerSelfCheck>("selfcheck", undefined, 8000).then((r) => setServer(r && typeof r.total === "number" ? r : "offline"))
+  }, [])
   useEffect(() => {
     let alive = true
     runSecurityCheck().then((r) => alive && setSecurity(r)).catch(() => alive && setSecurity([{ name: "Security checks could not run", detail: "Web Crypto unavailable", pass: false }]))
@@ -48,6 +53,13 @@ export default function SelfCheck() {
         <span className={`rounded-full px-3 py-1 text-xs font-bold ${allPass ? "bg-green-100 text-green-700" : "bg-orange-50 text-red-700"}`}>
           {passed} / {all.length}
         </span>
+      </div>
+      <div className={`mb-3 rounded-xl px-3 py-2 text-xs font-semibold ${server && server !== "offline" && server.passed === server.total ? "bg-green-50 text-green-800" : "bg-stone-100 text-stone-600"}`}>
+        {server === null
+          ? "Asking the server to run the same checks…"
+          : server === "offline"
+            ? "Server API not reachable here, so only the browser ran the checks."
+            : `Server (/api/selfcheck) ran the same rules: ${server.passed} / ${server.total} passed at ${new Date(server.time).toLocaleTimeString()}.`}
       </div>
       <p className="mb-4 text-xs text-stone-500">
         Runs the ETI, SA ID, travel, fair-work (BCEA, minimum wage) and security rules from lib/ every time this page loads.

@@ -33,6 +33,20 @@ Weekly logs that break these limits can't be submitted. Businesses see the hourl
 - Opportunities can be filtered by a whole province (choosing Western Cape shows Cape Town, Khayelitsha, Bellville and more) or by a radius around a place.
 - Demo businesses are in Gauteng, Western Cape, KwaZulu-Natal and Eastern Cape.
 
+## Server API (Vercel serverless functions)
+The `/api` folder holds real HTTP endpoints, built from the TypeScript in `/server` (run `node server/build.mjs` after changing them). They reuse the same rule files in `lib/`, so the browser and the server can never disagree.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/health` | Server status and the rule set it runs |
+| `POST /api/eti` | Calculates the ETI for a placement month (the ETI page shows "Confirmed by the server") |
+| `POST /api/week` | Re-checks a logged week against the BCEA before it's saved |
+| `POST /api/placement` | Re-checks pay against the minimum wage before a placement is posted |
+| `GET /api/places?q=` | Place search across South Africa (typo-tolerant list + OpenStreetMap, cached for a day) |
+| `GET /api/selfcheck` | Runs all 33 rule checks on the server (shown on the Admin page) |
+
+Every endpoint checks its input, allows only the right HTTP method, and limits each IP address to 60 requests a minute. If the API can't be reached, the app keeps working with the same rules in the browser.
+
 ## Access control and anti-cheating
 - `lib/access.ts` decides which role may open each page; wrong-role and signed-out visits are redirected.
 - `lib/auth.ts`: passwords and the admin code are stored only as salted SHA-256 hashes; 5 wrong attempts lock a form for 5 minutes; admin sessions end after 30 minutes; forged or stale sessions are signed out.
@@ -50,7 +64,7 @@ Weekly logs that break these limits can't be submitted. Businesses see the hourl
 - `lib/eti-selfcheck.ts` – automated ETI, SA ID and travel checks shown live on the Admin page.
 
 ## Not built yet (roadmap)
-Server-side sign-in and a cloud database, AI-assisted skill matching, public work-record links, YES sponsor–host marketplace.
+Accounts and data in a cloud database (the API is ready for it), AI-assisted skill matching, public work-record links, YES sponsor–host marketplace.
 
 ## Run locally
 `pnpm install` then `pnpm dev`.

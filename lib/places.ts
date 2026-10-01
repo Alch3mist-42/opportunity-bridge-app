@@ -122,12 +122,29 @@ export function nearestProvince(point: Point): Province {
 const NOMINATIM = "https://nominatim.openstreetmap.org"
 
 /** Any real place in South Africa, via OpenStreetMap. Returns [] if offline or blocked. */
-export async function searchPlacesOnline(query: string, signal?: AbortSignal): Promise<Place[]> {
+// In the browser we ask our own server first (/api/places), which calls OpenStreetMap with a
+// proper identifying header and caches results. If the server isn't there, we call OSM directly.
+const SERVER_UA = "OpportunityBridge/1.0 (Wits Social Good Hackathon 2026)"
+type Opts = { direct?: boolean }
+const inBrowser = typeof window !== "undefined"
+
+export async function searchPlacesOnline(query: string, signal?: AbortSignal, opts: Opts = {}): Promise<Place[]> {
   const q = query.trim()
   if (q.length < 3) return []
+  if (inBrowser && !opts.direct) {
+    try {
+      const res = await fetch(`/api/places?q=${encodeURIComponent(q)}`, { signal })
+      if (res.ok && res.headers.get("content-type")?.includes("json")) {
+        const data = (await res.json()) as { places?: Place[] }
+        if (Array.isArray(data.places)) return data.places
+      }
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return []
+    }
+  }
   try {
     const url = `${NOMINATIM}/search?format=jsonv2&countrycodes=za&addressdetails=1&limit=6&q=${encodeURIComponent(q)}`
-    const res = await fetch(url, { signal, headers: { "Accept-Language": "en" } })
+    const res = await fetch(url, { signal, headers: inBrowser ? { "Accept-Language": "en" } : { "Accept-Language": "en", "User-Agent": SERVER_UA } })
     if (!res.ok) return []
     const rows = (await res.json()) as Array<{ lat: string; lon: string; display_name: string; name?: string; address?: Record<string, string> }>
     return rows.map((r) => {
@@ -148,10 +165,19 @@ export async function searchPlacesOnline(query: string, signal?: AbortSignal): P
 }
 
 /** Name and province for a point (e.g. from "Use my location"). Falls back to the nearest built-in place. */
-export async function describePoint(point: Point): Promise<{ name: string; province: Province }> {
+export async function describePoint(point: Point, opts: Opts = {}): Promise<{ name: string; province: Province }> {
+  if (inBrowser && !opts.direct) {
+    try {
+      const res = await fetch(`/api/places?lat=${point.lat}&lng=${point.lng}`)
+      if (res.ok && res.headers.get("content-type")?.includes("json")) {
+        const data = (await res.json()) as { name?: string; province?: Province }
+        if (data.name && data.province) return { name: data.name, province: data.province }
+      }
+    } catch { /* fall back */ }
+  }
   try {
     const res = await fetch(`${NOMINATIM}/reverse?format=jsonv2&zoom=14&addressdetails=1&lat=${point.lat}&lon=${point.lng}`, {
-      headers: { "Accept-Language": "en" },
+      headers: inBrowser ? { "Accept-Language": "en" } : { "Accept-Language": "en", "User-Agent": SERVER_UA },
     })
     if (res.ok) {
       const r = (await res.json()) as { address?: Record<string, string> }

@@ -32,6 +32,7 @@ import {
   Users,
   Wallet,
   X,
+  LogOut,
 } from "lucide-react"
 import { jsPDF } from "jspdf"
 import MatchMap from "./MatchMap"
@@ -94,6 +95,8 @@ import {
   MIN_WAGE_HOURLY,
 } from "../lib/eti"
 import { ageOn, birthDateFromSAID } from "../lib/sa-id"
+import { businessPhoto, shrinkPhoto } from "../lib/business-photos"
+import { api, type ETIVerdict, type PlacementVerdict, type WeekVerdict } from "../lib/api"
 import { rankMatch } from "../lib/match"
 import {
   MODES,
@@ -256,6 +259,63 @@ function PageIntro({
     </div>
   )
 }
+function BusinessPhoto({ business, size = 48, className = "" }: { business: Business; size?: number; className?: string }) {
+  const [failed, setFailed] = useState(false)
+  const src = businessPhoto(business)
+  return src && !failed ? (
+    <img
+      src={src}
+      alt={`${business.name}`}
+      width={size}
+      height={size}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      style={{ width: size, height: size }}
+      className={`shrink-0 rounded-2xl object-cover ${className}`}
+    />
+  ) : (
+    <div
+      style={{ width: size, height: size }}
+      className={`flex shrink-0 items-center justify-center rounded-2xl bg-green-100 text-green-700 ${className}`}
+    >
+      <BriefcaseBusiness size={Math.round(size * 0.44)} />
+    </div>
+  )
+}
+
+function PhotoUpload({ business, onPhoto, toast }: { business: Business; onPhoto: (photo: string | undefined) => void; toast: (s: string) => void }) {
+  return (
+    <div className="flex items-center gap-4">
+      <BusinessPhoto business={business} size={64} />
+      <div className="flex flex-wrap gap-2">
+        <label className="btn-secondary cursor-pointer text-sm">
+          Upload shop photo
+          <input
+            type="file"
+            accept="image/*"
+            className="sr-only"
+            onChange={async (e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ""
+              if (!file) return
+              try {
+                onPhoto(await shrinkPhoto(file))
+              } catch (err) {
+                toast((err as Error).message)
+              }
+            }}
+          />
+        </label>
+        {business.photo && (
+          <Button className="btn-secondary text-sm" onClick={() => onPhoto(undefined)}>
+            Remove
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function LocationPicker({
   value,
   onChange,
@@ -343,7 +403,12 @@ function LocationPicker({
             value={query}
             autoComplete="off"
             onFocus={() => setOpen(true)}
-            onBlur={() => setTimeout(() => setOpen(false), 200)}
+            onBlur={() => {
+              // Typed a place but didn't tap a suggestion: take the best match.
+              const best = results[0]
+              if (query.trim() && query !== value && best) choose(best)
+              setTimeout(() => setOpen(false), 200)
+            }}
             onChange={(e) => {
               setQuery(e.target.value)
               setOpen(true)
@@ -373,6 +438,9 @@ function LocationPicker({
           : "Search any place in South Africa, or tap the arrow to use your location. Others only see your suburb."}
       </p>
       {error && <p className="text-xs text-red-700">{error}</p>}
+      {value && query === value && !error && (
+        <p className="mt-1 text-xs font-semibold text-green-700">✓ {value} selected</p>
+      )}
       {open && (
         <div className="absolute z-30 mt-2 max-h-72 w-full overflow-auto rounded-2xl border border-stone-200 bg-white p-2 shadow-xl">
           {results.map((p) => (
@@ -592,6 +660,14 @@ export default function App() {
             ]
           : []
   const inWorkspace = !!role && !needsSetup && !isPublic(path) && !redirect
+  // The initials button opens your own profile, which is also where you sign out.
+  const profilePath = needsSetup
+    ? setupPath
+    : role === "youth"
+      ? "/profile"
+      : role === "business"
+        ? "/business/onboarding"
+        : "/admin"
   const initials =
     role === "admin"
       ? "AD"
@@ -635,14 +711,17 @@ export default function App() {
             </Button>
             {role ? (
               <>
-                <span
-                  className="hidden h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-sm font-extrabold text-emerald-800 min-[360px]:flex"
-                  title={actorName}
+                <Button
+                  onClick={() => go(profilePath)}
+                  title="Your profile and sign out"
+                  aria-label="Your profile and sign out"
+                  className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-extrabold transition ${
+                    path === profilePath
+                      ? "bg-emerald-800 text-white ring-2 ring-emerald-300"
+                      : "bg-slate-200 text-emerald-800 hover:bg-emerald-100"
+                  }`}
                 >
                   {initials}
-                </span>
-                <Button onClick={signOut} className="btn-secondary !min-h-10 !px-3 !py-2 whitespace-nowrap text-xs">
-                  Sign out
                 </Button>
               </>
             ) : (
@@ -887,6 +966,19 @@ export default function App() {
                 </Button>
               }
             />
+          )}
+          {role && path === profilePath && !redirect && (
+            <div className="card mt-6 flex flex-wrap items-center justify-between gap-3 p-5">
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase tracking-wide text-stone-500">Account</p>
+                <p className="truncate text-sm font-semibold">
+                  {role === "admin" ? "Admin session (ends after 30 minutes)" : account?.email}
+                </p>
+              </div>
+              <Button onClick={signOut} className="btn-secondary text-sm">
+                <LogOut size={16} /> Sign out
+              </Button>
+            </div>
           )}
         </main>
       </div>
@@ -1427,16 +1519,21 @@ function Signup({
           className="card space-y-5 p-6"
           onSubmit={(e) => {
             e.preventDefault()
+            if (!name.trim()) {
+              setError("Add your full name.")
+              return
+            }
             const date = birthDateFromSAID(id)
-            setId("")
             if (!date) {
               setError(
-                "Enter a valid 13-digit SA ID with a real date and valid check digit.",
+                id.length < 13
+                  ? `Your ID number needs 13 digits (you've entered ${id.length}).`
+                  : "That ID number doesn't check out. Check each digit and try again.",
               )
               return
             }
-            if (!name.trim() || !suburb) {
-              setError("Add your name and choose a suburb.")
+            if (!suburb) {
+              setError("Choose your home suburb: type it and tap a suggestion, or use the location arrow.")
               return
             }
             if (name.trim().length > LIMITS.nameMax) {
@@ -1449,6 +1546,7 @@ function Signup({
               return
             }
             setDob(date)
+            setId("") // the ID number is never kept
             const newId = crypto.randomUUID()
             update((s) => {
               s.youth.push({
@@ -1496,10 +1594,21 @@ function Signup({
               inputMode="numeric"
               autoComplete="off"
               placeholder="13 digits"
-              maxLength={13}
             />
           </Field>
-          {dob && <p className="text-xs">Birth date: {dob}</p>}
+          {id.length > 0 && id.length < 13 && (
+            <p className="-mt-3 text-xs text-stone-500">{id.length} of 13 digits</p>
+          )}
+          {id.length === 13 &&
+            (birthDateFromSAID(id) ? (
+              <p className="-mt-3 text-xs font-semibold text-green-700">
+                ✓ Valid ID · born {birthDateFromSAID(id)}
+              </p>
+            ) : (
+              <p className="-mt-3 text-xs font-semibold text-red-700">
+                This ID number doesn't check out. Check each digit.
+              </p>
+            ))}
           <Field label="Home suburb">
             <LocationPicker
               value={suburb}
@@ -1720,9 +1829,7 @@ function Matches({
         <div className="p-5 md:p-6">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div className="flex min-w-0 gap-3">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-green-100 text-green-700">
-                <BriefcaseBusiness size={21} />
-              </div>
+              <BusinessPhoto business={b} size={52} />
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-stone-500">{b.name}</p>
                 <Heading3 className="heading mt-0.5 text-lg font-extrabold leading-snug">
@@ -2298,7 +2405,7 @@ function MyWeek({
           <div className="space-y-5">
             <form
               className="card space-y-5 p-5 md:p-6"
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault()
                 if (!chosen) return
                 const problem =
@@ -2309,6 +2416,12 @@ function MyWeek({
                   )
                 if (problem) {
                   setWeekError(problem)
+                  return
+                }
+                // The server checks the same labour rules again before the week is saved.
+                const verdict = await api<WeekVerdict>("week", { days }, 3000)
+                if (verdict && !verdict.allowed) {
+                  setWeekError(verdict.errors[0] || "The server refused this week.")
                   return
                 }
                 setWeekError("")
@@ -2334,7 +2447,11 @@ function MyWeek({
                 setDays([0, 0, 0, 0, 0, 0, 0])
                 setWork("")
                 setSkills([])
-                toast("Week submitted for supervisor sign-off.")
+                toast(
+                  verdict
+                    ? "Week checked by the server and sent for supervisor sign-off."
+                    : "Week submitted for supervisor sign-off.",
+                )
               }}
             >
               <div>
@@ -3109,9 +3226,12 @@ function Dashboard({
           <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-green-200">
             <BadgeCheck size={14} /> {business.tier}
           </div>
-          <Heading1 className="heading text-3xl font-extrabold md:text-4xl">
-            Hello, {business.name}.
-          </Heading1>
+          <div className="flex items-center gap-4">
+            <BusinessPhoto business={business} size={64} className="ring-2 ring-white/30" />
+            <Heading1 className="heading text-3xl font-extrabold md:text-4xl">
+              Hello, {business.name}.
+            </Heading1>
+          </div>
           <p className="mt-2 max-w-md text-sm leading-6 text-stone-300">
             Good work starts with an open door. Here's what's happening in your
             business.
@@ -3295,6 +3415,22 @@ function BusinessProfile({
             <p className="text-sm font-bold">{business.tier}</p>
             <p className="text-xs text-stone-500">Demo ID: {business.id}</p>
           </div>
+        </div>
+        <div className="card mb-5 p-5">
+          <p className="mb-3 text-sm font-bold">Shop photo</p>
+          <PhotoUpload
+            business={business}
+            toast={toast}
+            onPhoto={(photo) => {
+              update((s) => {
+                const b = s.businesses.find((x) => x.id === business.id)!
+                if (photo) b.photo = photo
+                else delete b.photo
+                return s
+              })
+              toast(photo ? "Photo saved. Young people now see it on your placements." : "Photo removed.")
+            }}
+          />
         </div>
         <form
           className="card space-y-5 p-6"
@@ -3535,7 +3671,7 @@ function PostPlacement({
       />
       <form
         className="grid gap-5 lg:grid-cols-[1fr_300px]"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault()
           if (!skills.length) {
             toast("Add at least one required skill.")
@@ -3544,6 +3680,11 @@ function PostPlacement({
           const problem = validatePlacement({ title, description, stipend, hours, duration })
           if (problem) {
             toast(problem)
+            return
+          }
+          const verdict = await api<PlacementVerdict>("placement", { stipend, hours }, 3000)
+          if (verdict && !verdict.allowed) {
+            toast(verdict.problem || "The server refused this placement.")
             return
           }
           update((s) => {
@@ -3563,7 +3704,11 @@ function PostPlacement({
             s.audit.unshift(audit(business.name, `Posted ${title}`))
             return s
           })
-          toast("Placement posted. Young people can now find it.")
+          toast(
+            verdict
+              ? "Pay checked by the server. Placement posted; young people can now find it."
+              : "Placement posted. Young people can now find it.",
+          )
           go("/business")
         }}
       >
@@ -3932,6 +4077,26 @@ function ETIPage({
     employerPayeRegistered: business.paye,
     employerTaxCompliant: business.compliant,
   })
+  // The server calculates the same estimate independently; we show whether it agrees.
+  const [serverEti, setServerEti] = useState<ETIVerdict | null | "offline">(null)
+  useEffect(() => {
+    setServerEti(null)
+    const t = setTimeout(async () => {
+      const r = await api<ETIVerdict>("eti", {
+        dateOfBirth: dob,
+        claimMonth: monthNow(),
+        monthlyPay: pay,
+        paidHours: hours,
+        monthsAlreadyClaimed: months,
+        isConnectedPerson: connected,
+        isDomesticWorker: domestic,
+        employerPayeRegistered: business.paye,
+        employerTaxCompliant: business.compliant,
+      })
+      setServerEti(r && typeof r.amount === "number" ? r : "offline")
+    }, 400)
+    return () => clearTimeout(t)
+  }, [dob, pay, hours, months, connected, domestic, business.paye, business.compliant])
   const csv = () => {
     const rows = [
       [
@@ -4189,6 +4354,14 @@ function ETIPage({
           <p className="heading mt-2 text-3xl font-extrabold text-emerald-800">
             {money(result.amount)}
           </p>
+          {serverEti && serverEti !== "offline" && (
+            <p className={`mt-1 text-xs font-semibold ${serverEti.amount === result.amount ? "text-green-700" : "text-red-700"}`}>
+              {serverEti.amount === result.amount
+                ? `✓ Confirmed by the server (/api/eti): ${money(serverEti.amount)}`
+                : `Server calculated ${money(serverEti.amount)}. Please check the inputs.`}
+            </p>
+          )}
+          {serverEti === null && <p className="mt-1 text-xs text-stone-500">Checking with the server…</p>}
           {result.reasons.map((r) => (
             <p key={r} className="mt-2 text-xs text-red-700">
               {r}
